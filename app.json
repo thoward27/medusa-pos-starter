@@ -27,6 +27,14 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "minSdkVersion": 26
+          }
+        }
+      ],
       "expo-router",
       [
         "expo-splash-screen",
@@ -55,7 +63,14 @@
           ]
         }
       ],
-      "expo-web-browser"
+      "expo-web-browser",
+      [
+        "./plugins/withStripeTerminal.js",
+        {
+          "merchantDisplayName": "Agilo POS",
+          "nfcUsageDescription": "Agilo POS needs access to NFC to accept contactless payments"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
@@ -64,6 +79,10 @@
       "router": {},
       "eas": {
         "projectId": "2c44b68b-5c32-4031-a160-d315e6c399d4"
+      },
+      "stripeTerminal": {
+        "merchantDisplayName": "Agilo POS",
+        "enableSimulatedReaders": true
       }
     },
     "owner": "agilo-com",
