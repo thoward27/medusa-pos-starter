@@ -476,16 +476,27 @@ export default function CartScreen() {
           <InfoBanner variant="ghost" colorScheme="error" className="w-40">
             Failed to load cart
           </InfoBanner>
-          <Button
-            onPress={() => {
-              draftOrder.refetch();
-              settings.refetch();
-            }}
-            isPending={draftOrder.isRefetching || settings.isRefetching}
-            variant="outline"
-          >
-            Try Again
-          </Button>
+          <View className="flex-row gap-2">
+            <Button
+              onPress={() => {
+                draftOrder.refetch();
+                settings.refetch();
+              }}
+              isPending={draftOrder.isRefetching || settings.isRefetching}
+              variant="outline"
+            >
+              Try Again
+            </Button>
+            <Button
+              onPress={() => {
+                cancelDraftOrder.mutate();
+              }}
+              isPending={cancelDraftOrder.isPending}
+              variant="outline"
+            >
+              Reset Cart
+            </Button>
+          </View>
         </View>
       </Layout>
     );
