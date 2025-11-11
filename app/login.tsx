@@ -11,6 +11,13 @@ import * as z from 'zod/v4';
 
 const normalizeUrl = (url: string): string => {
   if (!url) return url;
+  // In development mode, preserve http:// if present, otherwise remove protocol
+  if (__DEV__) {
+    // Check if URL starts with http:// (not https://)
+    if (url.match(/^http:\/\//)) {
+      return url; // Keep http:// in dev mode
+    }
+  }
   // Remove http:// or https:// if present
   return url.replace(/^https?:\/\//, '');
 };
@@ -26,7 +33,13 @@ const validateMedusaUrl = async (url: string): Promise<boolean> => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-    const response = await fetch(`https://${normalizedUrl}/health`, {
+    // In dev mode, check if URL already has http:// protocol
+    const fullUrl =
+      normalizedUrl.startsWith('http://') || normalizedUrl.startsWith('https://')
+        ? normalizedUrl
+        : `https://${normalizedUrl}`;
+
+    const response = await fetch(`${fullUrl}/health`, {
       method: 'GET',
       signal: controller.signal,
       credentials: 'omit',
@@ -58,7 +71,9 @@ const loginSchema = z.object({
         if (!url) return false;
 
         try {
-          new URL(`https://${url}`);
+          // In dev mode, check if URL already has http:// protocol
+          const fullUrl = url.startsWith('http://') || url.startsWith('https://') ? url : `https://${url}`;
+          new URL(fullUrl);
         } catch {
           console.error('Invalid URL format');
           return false;
@@ -83,7 +98,11 @@ export default function LoginScreen() {
 
   const handleLogin = async (data: LoginFormData) => {
     setError(null);
-    const fullUrl = `https://${data.medusaUrl}`;
+    // In dev mode, check if URL already has http:// or https:// protocol
+    const fullUrl =
+      data.medusaUrl.startsWith('http://') || data.medusaUrl.startsWith('https://')
+        ? data.medusaUrl
+        : `https://${data.medusaUrl}`;
     try {
       await auth.login(fullUrl, data.email, data.password);
     } catch (err: any) {
@@ -92,7 +111,8 @@ export default function LoginScreen() {
   };
 
   const defaultValues: Partial<LoginFormData> = {
-    medusaUrl: auth.state.status !== 'loading' ? (auth.state.medusaUrl ?? '') : '',
+    medusaUrl:
+      auth.state.status !== 'loading' ? (auth.state.medusaUrl ?? process.env.EXPO_PUBLIC_MEDUSA_BACKEND_URL ?? '') : '',
     email: '',
     password: '',
   };
