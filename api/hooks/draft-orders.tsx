@@ -9,8 +9,8 @@ import {
   AdminUpdateDraftOrderItem,
 } from '@medusajs/types';
 import { useMutation, UseMutationOptions, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as SecureStore from 'expo-secure-store';
 import * as React from 'react';
+import { storage } from '@/utils/storage';
 
 const DRAFT_ORDER_ID_STORAGE_KEY = 'draft_order_id';
 export const DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL = 'noreply+pos-guest@agilo.com';
@@ -48,7 +48,7 @@ const useGetOrSetDraftOrderId = () => {
   const getOrSetDefaultCustomer = useGetOrSetDefaultCustomer();
 
   return React.useCallback(async () => {
-    const draftOrderId = await SecureStore.getItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
+    const draftOrderId = await storage.getItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
 
     if (draftOrderId) {
       return draftOrderId;
@@ -70,7 +70,7 @@ const useGetOrSetDraftOrderId = () => {
       customer_id: defaultCustomerId,
     });
 
-    await SecureStore.setItemAsync(DRAFT_ORDER_ID_STORAGE_KEY, newDraftOrder.draft_order.id);
+    await storage.setItemAsync(DRAFT_ORDER_ID_STORAGE_KEY, newDraftOrder.draft_order.id);
 
     return newDraftOrder.draft_order.id;
   }, [getOrSetDefaultCustomer, sdk, settings.data?.region?.id, settings.data?.sales_channel?.id]);
@@ -106,7 +106,7 @@ export const useCurrentDraftOrder = () => {
   return useQuery({
     queryKey: ['draft-order'],
     queryFn: async () => {
-      const draftOrderId = await SecureStore.getItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
+      const draftOrderId = await storage.getItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
 
       if (!draftOrderId) {
         return null;
@@ -114,7 +114,7 @@ export const useCurrentDraftOrder = () => {
 
       return sdk.admin.draftOrder.retrieve(draftOrderId, {
         fields:
-          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+customer.*',
+          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.compare_at_unit_price,+items.unit_price,+customer.*',
       });
     },
   });
@@ -127,12 +127,12 @@ export const useCancelDraftOrder = (options?: Omit<UseMutationOptions<void>, 'mu
   return useMutation({
     mutationKey: ['draft-order', 'cancel'],
     mutationFn: async () => {
-      const draftOrderId = await SecureStore.getItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
+      const draftOrderId = await storage.getItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
       if (!draftOrderId) {
         throw new Error('Draft order ID not found');
       }
 
-      await SecureStore.deleteItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
+      await storage.deleteItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
       await sdk.admin.draftOrder.delete(draftOrderId);
     },
     ...options,
@@ -163,12 +163,58 @@ export const useAddToDraftOrder = (
     mutationKey: ['draft-order', 'items', 'add'],
     mutationFn: async (items: AdminAddDraftOrderItems) => {
       const draftOrderId = await getOrSetDraftOrderId();
+
+      // Get current draft order to check for existing items
+      const currentDraftOrder = await sdk.admin.draftOrder.retrieve(draftOrderId, {
+        fields: '+items.variant_id',
+      });
+
       await sdk.admin.draftOrder.beginEdit(draftOrderId);
-      await sdk.admin.draftOrder.addItems(draftOrderId, items).catch(async (error) => {
+
+      try {
+        // Separate items into those that need to be updated vs added
+        const itemsToAdd = [];
+        const itemsToUpdate = [];
+
+        for (const newItem of items.items) {
+          // Find if this variant already exists in the cart
+          const existingItem = currentDraftOrder.draft_order.items.find(
+            (item) => item.variant_id === newItem.variant_id,
+          );
+
+          if (existingItem) {
+            // Item exists, increment quantity
+            itemsToUpdate.push({
+              id: existingItem.id,
+              quantity: existingItem.quantity + newItem.quantity,
+              unit_price: existingItem.unit_price,
+              compare_at_unit_price: existingItem.compare_at_unit_price,
+            });
+          } else {
+            // Item doesn't exist, add it
+            itemsToAdd.push(newItem);
+          }
+        }
+
+        // Update existing items
+        for (const itemUpdate of itemsToUpdate) {
+          await sdk.admin.draftOrder.updateItem(draftOrderId, itemUpdate.id, {
+            quantity: itemUpdate.quantity,
+            unit_price: itemUpdate.unit_price,
+            compare_at_unit_price: itemUpdate.compare_at_unit_price,
+          });
+        }
+
+        // Add new items
+        if (itemsToAdd.length > 0) {
+          await sdk.admin.draftOrder.addItems(draftOrderId, { items: itemsToAdd });
+        }
+
+        return await sdk.admin.draftOrder.confirmEdit(draftOrderId);
+      } catch (error) {
         await sdk.admin.draftOrder.cancelEdit(draftOrderId);
         throw error;
-      });
-      return sdk.admin.draftOrder.confirmEdit(draftOrderId);
+      }
     },
     ...options,
     onSettled: async (...args) => {
@@ -206,7 +252,12 @@ class UpdateDraftOrderItemAborted extends Error {
 
 export const useUpdateDraftOrderItem = (
   options?: Omit<
-    UseMutationOptions<void, Error, { id: string; update: Pick<AdminUpdateDraftOrderItem, 'quantity'> }, unknown>,
+    UseMutationOptions<
+      void,
+      Error,
+      { id: string; update: Pick<AdminUpdateDraftOrderItem, 'quantity' | 'unit_price' | 'compare_at_unit_price'> },
+      unknown
+    >,
     'mutationKey' | 'mutationFn'
   >,
 ) => {
@@ -216,7 +267,10 @@ export const useUpdateDraftOrderItem = (
 
   return useMutation({
     mutationKey: ['draft-order', 'items', 'update'],
-    mutationFn: async (item: { id: string; update: Pick<AdminUpdateDraftOrderItem, 'quantity'> }) => {
+    mutationFn: async (item: {
+      id: string;
+      update: Pick<AdminUpdateDraftOrderItem, 'quantity' | 'unit_price' | 'compare_at_unit_price'>;
+    }) => {
       // Clear existing timeout for this item
       if (debounceTimeouts.has(item.id)) {
         clearTimeout(debounceTimeouts.get(item.id)!);
@@ -277,9 +331,11 @@ export const useUpdateDraftOrderItem = (
           await sdk.admin.draftOrder.beginEdit(draftOrderId);
 
           try {
+            console.log(`Updating item ${item.id} with quantity ${JSON.stringify(item.update)}`);
             await sdk.admin.draftOrder.updateItem(draftOrderId, item.id, item.update);
             await sdk.admin.draftOrder.confirmEdit(draftOrderId);
           } catch (error) {
+            console.error(`Error updating item ${item.id}:`, error);
             await sdk.admin.draftOrder.cancelEdit(draftOrderId);
             throw error;
           }
@@ -328,7 +384,15 @@ export const useUpdateDraftOrderItem = (
                     item.id === variables.id
                       ? {
                           ...item,
-                          ...variables.update,
+                          quantity: variables.update.quantity,
+                          ...(variables.update.unit_price !== undefined &&
+                            variables.update.unit_price !== null && {
+                              unit_price: variables.update.unit_price,
+                            }),
+                          ...(variables.update.compare_at_unit_price !== undefined &&
+                            variables.update.compare_at_unit_price !== null && {
+                              compare_at_unit_price: variables.update.compare_at_unit_price,
+                            }),
                         }
                       : item,
                   ),
@@ -584,7 +648,7 @@ export const useCompleteDraftOrder = (
       await sdk.client.fetch(`/admin/orders/${draftOrderId}/complete`, {
         method: 'POST',
       });
-      await SecureStore.deleteItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
+      await storage.deleteItemAsync(DRAFT_ORDER_ID_STORAGE_KEY);
     },
     ...options,
     onSettled: async (...args) => {

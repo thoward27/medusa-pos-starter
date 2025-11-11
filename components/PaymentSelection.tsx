@@ -1,12 +1,11 @@
-import { Bluetooth } from '@/components/icons/bluetooth';
-import { Smartphone } from '@/components/icons/smartphone';
+import { CreditCard } from '@/components/icons/credit-card';
 import { Wallet } from '@/components/icons/wallet';
 import { Text } from '@/components/ui/Text';
 import { clx } from '@/utils/clx';
 import React from 'react';
 import { TouchableOpacity, View } from 'react-native';
 
-export type PaymentMethod = 'cash' | 'tap_to_pay' | 'bluetooth_reader';
+export type PaymentMethod = 'cash' | 'card';
 
 interface PaymentSelectionProps {
   value: PaymentMethod;
@@ -23,16 +22,10 @@ export const PaymentSelection: React.FC<PaymentSelectionProps> = ({ value, onCha
       icon: <Wallet size={24} className="text-gray-400" />,
     },
     {
-      value: 'tap_to_pay',
-      label: 'Tap to Pay',
-      description: 'Tap card to phone',
-      icon: <Smartphone size={24} className="text-gray-400" />,
-    },
-    {
-      value: 'bluetooth_reader',
-      label: 'Bluetooth Reader',
-      description: 'Card reader via Bluetooth',
-      icon: <Bluetooth size={24} className="text-gray-400" />,
+      value: 'card',
+      label: 'Card',
+      description: 'Credit or debit card',
+      icon: <CreditCard size={24} className="text-gray-400" />,
     },
   ];
 

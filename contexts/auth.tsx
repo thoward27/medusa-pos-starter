@@ -1,6 +1,6 @@
 import { isUnauthorizedError } from '@/utils/errors';
+import { storage } from '@/utils/storage';
 import Medusa from '@medusajs/js-sdk';
-import * as SecureStore from 'expo-secure-store';
 import * as React from 'react';
 import Toast from 'react-native-toast-message';
 
@@ -77,9 +77,9 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           Authorization: `Bearer ${apiKey}`,
         });
 
-        await SecureStore.setItemAsync('medusaUrl', medusaUrl);
-        await SecureStore.setItemAsync('userEmail', email);
-        await SecureStore.setItemAsync('apiKey', apiKey);
+        await storage.setItemAsync('medusaUrl', medusaUrl);
+        await storage.setItemAsync('userEmail', email);
+        await storage.setItemAsync('apiKey', apiKey);
 
         setState({
           status: 'authenticated',
@@ -123,7 +123,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
       throw new Error('User is not authenticated');
     }
 
-    await SecureStore.deleteItemAsync('apiKey');
+    await storage.deleteItemAsync('apiKey');
     setState({ status: 'unauthenticated' });
   }, [state.status]);
 
@@ -132,9 +132,9 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
 
     const loadAuthState = async () => {
       try {
-        const medusaUrl = await SecureStore.getItemAsync('medusaUrl');
-        const userEmail = await SecureStore.getItemAsync('userEmail');
-        const apiKey = await SecureStore.getItemAsync('apiKey');
+        const medusaUrl = await storage.getItemAsync('medusaUrl');
+        const userEmail = await storage.getItemAsync('userEmail');
+        const apiKey = await storage.getItemAsync('apiKey');
 
         if (cancelled) {
           return;
@@ -183,7 +183,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
             return;
           }
 
-          await SecureStore.deleteItemAsync('apiKey');
+          await storage.deleteItemAsync('apiKey');
 
           setState({
             status: 'unauthenticated',
@@ -196,7 +196,7 @@ export const AuthProvider: React.FC<React.PropsWithChildren> = ({ children }) =>
           return;
         }
 
-        await SecureStore.deleteItemAsync('apiKey');
+        await storage.deleteItemAsync('apiKey');
 
         if (isUnauthorizedError(error)) {
           Toast.show({

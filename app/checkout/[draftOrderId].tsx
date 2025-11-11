@@ -1,23 +1,29 @@
 import {
   DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL,
-  useCompleteDraftOrder,
   useCurrentDraftOrder,
   useDraftOrderOrOrder,
 } from '@/api/hooks/draft-orders';
-import { ShoppingCart } from '@/components/icons/shopping-cart';
+import { useCompleteOrder } from '@/api/hooks/payments';
+import { STRIPE_CONFIG } from '@/config/stripe';
+import { router, useLocalSearchParams } from 'expo-router';
+import React, { useState } from 'react';
+import { Image, ScrollView, View } from 'react-native';
+import { Dialog } from '@/components/ui/Dialog';
 import { InfoBanner } from '@/components/InfoBanner';
+import { PaymentSelection, PaymentMethod } from '@/components/PaymentSelection';
+import { CardPayment } from '@/components/CardPayment';
 import { CheckoutSkeleton } from '@/components/skeletons/CheckoutSkeleton';
 import { Button } from '@/components/ui/Button';
-import { Dialog } from '@/components/ui/Dialog';
 import { Layout } from '@/components/ui/Layout';
 import { Text } from '@/components/ui/Text';
 import { useSettings } from '@/contexts/settings';
 import { formatDate } from '@/utils/date';
 import { AdminOrderLineItem } from '@medusajs/types';
+import { StripeProvider } from '@stripe/stripe-react-native';
 import { FlashList, ListRenderItem } from '@shopify/flash-list';
-import { router, useLocalSearchParams, usePathname } from 'expo-router';
-import React from 'react';
-import { Image, View } from 'react-native';
+import { ShoppingCart } from '@/components/icons/shopping-cart';
+
+type CheckoutStep = 'details' | 'payment';
 
 const DraftOrderItem: React.FC<{ item: AdminOrderLineItem }> = ({ item }) => {
   const settings = useSettings();
@@ -25,40 +31,79 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem }> = ({ item }) => {
   const thumbnail = item.thumbnail || item.product?.thumbnail || item.product?.images?.[0]?.url;
 
   return (
-    <View className="flex-row gap-4 bg-white py-6">
-      <View className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-xl bg-gray-200">
-        {thumbnail && <Image source={{ uri: thumbnail }} className="h-full w-full object-cover" />}
+    <View className="flex-row gap-4 p-4">
+      {thumbnail && (
+        <Image
+          source={{
+            uri: thumbnail,
+          }}
+          className="h-16 w-16 rounded-lg bg-gray-200"
+        />
+      )}
+      {!thumbnail && <View className="h-16 w-16 rounded-lg bg-gray-200" />}
+
+      <View className="flex-1 justify-between">
+        <View>
+          <Text className="font-semibold">{item.title}</Text>
+          <Text className="text-sm text-gray-400">{item.variant?.title}</Text>
+        </View>
+
+        <View className="flex-row items-center justify-between">
+          <Text className="text-gray-400">Qty: {item.quantity}</Text>
+          <Text className="font-semibold">
+            {item.total?.toLocaleString('en-US', {
+              style: 'currency',
+              currency: draftOrder.data?.draft_order.region?.currency_code || settings.data?.region?.currency_code,
+              currencyDisplay: 'narrowSymbol',
+            })}
+          </Text>
+        </View>
       </View>
-      <View className="flex-1 flex-col gap-2">
-        <Text>{item.product_title}</Text>
-        {item.variant && item.variant.options && item.variant.options.length > 0 && (
-          <View className="flex-row flex-wrap items-center gap-x-2 gap-y-1">
-            {item.variant.options.map((option) => (
-              <View className="flex-row gap-1" key={option.id}>
-                <Text className="text-sm text-gray-400">{option.option?.title || option.option_id}:</Text>
-                <Text className="text-sm">{option.value}</Text>
-              </View>
-            ))}
-          </View>
-        )}
-      </View>
-      <Text className="ml-auto">
-        {item.unit_price.toLocaleString('en-US', {
-          style: 'currency',
-          currency: draftOrder.data?.draft_order.region?.currency_code || settings.data?.region?.currency_code,
-          currencyDisplay: 'narrowSymbol',
-        })}
-      </Text>
     </View>
   );
 };
 
 export default function CheckoutScreen() {
-  const pathName = usePathname();
-  const { draftOrderId } = useLocalSearchParams<{ draftOrderId: string }>();
+  const { draftOrderId, requiresShipping: requiresShippingParam } = useLocalSearchParams<{
+    draftOrderId: string;
+    requiresShipping?: string;
+  }>();
   const settings = useSettings();
   const draftOrder = useDraftOrderOrOrder(draftOrderId);
-  const completeOrder = useCompleteDraftOrder(draftOrderId);
+  const completeOrder = useCompleteOrder(draftOrderId);
+
+  const [currentStep, setCurrentStep] = useState<CheckoutStep>('details');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+
+  // Get requiresShipping from route params (passed from cart screen)
+  const requiresShipping = requiresShippingParam === 'true';
+
+  const handleCashPayment = async () => {
+    try {
+      await completeOrder.mutateAsync({
+        requiresShipping,
+        payment: {
+          type: 'cash',
+        },
+      });
+    } catch (error) {
+      console.error('Failed to complete order with cash:', error);
+    }
+  };
+
+  const handleCardPaymentSuccess = async (paymentIntentId: string) => {
+    try {
+      await completeOrder.mutateAsync({
+        requiresShipping,
+        payment: {
+          type: 'stripe_payment_intent',
+          paymentIntentId,
+        },
+      });
+    } catch (error) {
+      console.error('Failed to complete order with payment intent:', error);
+    }
+  };
 
   const renderItem = React.useCallback<ListRenderItem<AdminOrderLineItem>>(
     ({ item }) => <DraftOrderItem item={item} />,
@@ -131,112 +176,196 @@ export default function CheckoutScreen() {
       <Layout>
         <Text className="mb-6 text-4xl">Checkout</Text>
 
-        <FlashList
-          data={items}
-          renderItem={renderItem}
-          ItemSeparatorComponent={() => <View className="h-hairline bg-gray-200" />}
-          ListHeaderComponent={() => <Text className="text-2xl">Cart Items</Text>}
-          ListFooterComponent={() =>
-            !isPosDefaultCustomer ? (
-              <View className="mb-10 mt-4">
-                <Text className="mb-6 text-2xl">Information</Text>
-
-                {customerName && (
-                  <View className="mb-4 flex-row">
-                    <Text className="w-24 text-gray-300">Full Name</Text>
-                    <View className="flex-1">
-                      <Text>{customerName}</Text>
+        {currentStep === 'details' && (
+          <>
+            <FlashList
+              data={items}
+              renderItem={renderItem}
+              ItemSeparatorComponent={() => <View className="h-hairline bg-gray-200" />}
+              ListHeaderComponent={() => <Text className="text-2xl">Cart Items</Text>}
+              ListFooterComponent={() => (
+                <View className="mb-10 mt-4">
+                  <Text className="mb-2 text-2xl">Customer</Text>
+                  {!isPosDefaultCustomer ? (
+                    <View className="rounded-xl bg-gray-50 p-4">
+                      {customerName && <Text className="font-semibold">{customerName}</Text>}
+                      {customerEmail && <Text className="text-gray-400">{customerEmail}</Text>}
+                      {customerPhone && <Text className="text-gray-400">{customerPhone}</Text>}
                     </View>
-                  </View>
-                )}
-                <View className="mb-4 flex-row">
-                  <Text className="w-24 text-gray-300">E-Mail</Text>
-                  <View className="flex-1">
-                    <Text>{customerEmail}</Text>
+                  ) : (
+                    <View className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">
+                      <Text className="text-center text-gray-400">Walk-in Customer</Text>
+                    </View>
+                  )}
+
+                  <View className="mb-4 mt-6 rounded-xl bg-gray-50 p-4">
+                    <Text className="mb-4 text-lg font-semibold">Order Summary</Text>
+                    <View className="mb-2 flex-row justify-between">
+                      <Text className="text-gray-400">Subtotal</Text>
+                      <Text>
+                        {draftOrder.data.subtotal?.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                          currencyDisplay: 'narrowSymbol',
+                        })}
+                      </Text>
+                    </View>
+                    <View className="mb-2 flex-row justify-between">
+                      <Text className="text-gray-400">Taxes</Text>
+                      <Text>
+                        {draftOrder.data.tax_total?.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                          currencyDisplay: 'narrowSymbol',
+                        })}
+                      </Text>
+                    </View>
+                    {typeof draftOrder.data.discount_total === 'number' && draftOrder.data.discount_total > 0 && (
+                      <View className="mb-2 flex-row justify-between">
+                        <Text className="text-gray-400">Discount</Text>
+                        <Text>
+                          {(draftOrder.data.discount_total * -1)?.toLocaleString('en-US', {
+                            style: 'currency',
+                            currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                            currencyDisplay: 'narrowSymbol',
+                          })}
+                        </Text>
+                      </View>
+                    )}
+                    <View className="mt-4 border-t border-gray-200 pt-4">
+                      <View className="flex-row justify-between">
+                        <Text className="text-lg font-semibold">Total</Text>
+                        <Text className="text-lg font-semibold">
+                          {draftOrder.data.total?.toLocaleString('en-US', {
+                            style: 'currency',
+                            currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                            currencyDisplay: 'narrowSymbol',
+                          })}
+                        </Text>
+                      </View>
+                    </View>
                   </View>
                 </View>
-                {customerPhone && (
-                  <View className="flex-row">
-                    <Text className="w-24 text-gray-300">Phone</Text>
-                    <View className="flex-1">
-                      <Text>{customerPhone}</Text>
+              )}
+              keyboardDismissMode="on-drag"
+            />
+
+            <View className="pb-safe flex-row gap-2">
+              <Button variant="outline" className="flex-1" onPress={() => router.back()}>
+                Back
+              </Button>
+              <Button className="flex-1" onPress={() => setCurrentStep('payment')} disabled={!isDraftOrder}>
+                Continue to Payment
+              </Button>
+            </View>
+          </>
+        )}
+
+        {currentStep === 'payment' && (
+          <>
+            <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+              <Text className="mb-6 text-2xl">Select Payment Method</Text>
+
+              <PaymentSelection value={paymentMethod} onChange={setPaymentMethod} className="mb-6" />
+
+              {/* Cash Payment */}
+              {paymentMethod === 'cash' && (
+                <>
+                  <View className="mb-6 rounded-xl bg-gray-50 p-4">
+                    <Text className="mb-2 text-lg font-semibold">Cash Payment</Text>
+                    <Text className="text-gray-400">Collect cash from customer and complete the order.</Text>
+                  </View>
+
+                  <View className="mb-6 rounded-xl bg-gray-50 p-4">
+                    <Text className="mb-4 text-lg font-semibold">Order Summary</Text>
+                    <View className="mb-2 flex-row justify-between">
+                      <Text className="text-gray-400">Subtotal</Text>
+                      <Text>
+                        {draftOrder.data.subtotal?.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                          currencyDisplay: 'narrowSymbol',
+                        })}
+                      </Text>
+                    </View>
+                    <View className="mb-2 flex-row justify-between">
+                      <Text className="text-gray-400">Taxes</Text>
+                      <Text>
+                        {draftOrder.data.tax_total?.toLocaleString('en-US', {
+                          style: 'currency',
+                          currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                          currencyDisplay: 'narrowSymbol',
+                        })}
+                      </Text>
+                    </View>
+                    {typeof draftOrder.data.discount_total === 'number' && draftOrder.data.discount_total > 0 && (
+                      <View className="mb-2 flex-row justify-between">
+                        <Text className="text-gray-400">Discount</Text>
+                        <Text>
+                          {(draftOrder.data.discount_total * -1)?.toLocaleString('en-US', {
+                            style: 'currency',
+                            currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                            currencyDisplay: 'narrowSymbol',
+                          })}
+                        </Text>
+                      </View>
+                    )}
+                    <View className="mt-4 border-t border-gray-200 pt-4">
+                      <View className="flex-row justify-between">
+                        <Text className="text-lg font-semibold">Total</Text>
+                        <Text className="text-lg font-semibold">
+                          {draftOrder.data.total?.toLocaleString('en-US', {
+                            style: 'currency',
+                            currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
+                            currencyDisplay: 'narrowSymbol',
+                          })}
+                        </Text>
+                      </View>
                     </View>
                   </View>
-                )}
+                </>
+              )}
+
+              {/* Card Payment */}
+              {paymentMethod === 'card' && (
+                <StripeProvider publishableKey={STRIPE_CONFIG.publishableKey}>
+                  <CardPayment
+                    amount={Math.round((draftOrder.data.total || 0) * 100)}
+                    currency={draftOrder.data.region?.currency_code || settings.data?.region?.currency_code || 'usd'}
+                    onPaymentSuccess={handleCardPaymentSuccess}
+                    onCancel={() => setPaymentMethod('cash')}
+                  />
+                </StripeProvider>
+              )}
+            </ScrollView>
+
+            {/* Only show complete order button for cash */}
+            {paymentMethod === 'cash' && (
+              <View className="pb-safe flex-row gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onPress={() => setCurrentStep('details')}
+                  disabled={completeOrder.isPending}
+                >
+                  Back
+                </Button>
+                <Button
+                  className="flex-1"
+                  onPress={handleCashPayment}
+                  disabled={!isDraftOrder}
+                  isPending={completeOrder.isPending}
+                >
+                  Complete Order
+                </Button>
               </View>
-            ) : null
-          }
-          keyboardDismissMode="on-drag"
-        />
-
-        <View className="mb-6 gap-y-2 border-y border-gray-200 py-4">
-          <View className="flex-row justify-between">
-            <Text className="text-sm text-gray-400">Taxes</Text>
-            <Text className="text-sm text-gray-400">
-              {draftOrder.data.tax_total?.toLocaleString('en-US', {
-                style: 'currency',
-                currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
-                currencyDisplay: 'narrowSymbol',
-              })}
-            </Text>
-          </View>
-          <View className="flex-row justify-between">
-            <Text className="text-sm text-gray-400">Subtotal</Text>
-            <Text className="text-sm text-gray-400">
-              {draftOrder.data.subtotal?.toLocaleString('en-US', {
-                style: 'currency',
-                currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
-                currencyDisplay: 'narrowSymbol',
-              })}
-            </Text>
-          </View>
-          {typeof draftOrder.data.discount_total === 'number' && draftOrder.data.discount_total > 0 && (
-            <View className="flex-row justify-between">
-              <Text className="text-sm text-gray-400">Discount</Text>
-              <Text className="text-sm text-gray-400">
-                {(draftOrder.data.discount_total * -1)?.toLocaleString('en-US', {
-                  style: 'currency',
-                  currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
-                  currencyDisplay: 'narrowSymbol',
-                })}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <View className="mb-6 flex-row justify-between">
-          <Text className="text-lg">Total</Text>
-          <Text className="text-lg">
-            {draftOrder.data.total?.toLocaleString('en-US', {
-              style: 'currency',
-              currency: draftOrder.data.region?.currency_code || settings.data?.region?.currency_code,
-              currencyDisplay: 'narrowSymbol',
-            })}
-          </Text>
-        </View>
-
-        <View className="pb-safe flex-row gap-2">
-          <Button
-            variant="outline"
-            className="flex-1"
-            onPress={() => router.back()}
-            disabled={!isDraftOrder || completeOrder.isPending}
-          >
-            Back to Cart
-          </Button>
-          <Button
-            className="flex-1"
-            onPress={() => completeOrder.mutate()}
-            disabled={!isDraftOrder}
-            isPending={completeOrder.isPending}
-          >
-            Complete Order
-          </Button>
-        </View>
+            )}
+          </>
+        )}
       </Layout>
 
       <Dialog
-        visible={!isDraftOrder && pathName === `/checkout/${draftOrderId}`}
+        visible={!isDraftOrder && draftOrder.data?.status !== 'draft'}
         showCloseButton={false}
         dismissOnOverlayPress={false}
         onRequestClose={(event) => {

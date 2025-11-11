@@ -19,14 +19,17 @@ import { Trash2 } from '@/components/icons/trash-2';
 import { UserRoundPlus } from '@/components/icons/user-round-plus';
 import { X } from '@/components/icons/x';
 import { InfoBanner } from '@/components/InfoBanner';
+import { PriceEditorDialog } from '@/components/PriceEditorDialog';
 import { CartSkeleton } from '@/components/skeletons/CartSkeleton';
 import { SwipeableListItem } from '@/components/SwipeableListItem';
 import { Button } from '@/components/ui/Button';
+import { Checkbox } from '@/components/ui/Checkbox';
 import { Dialog } from '@/components/ui/Dialog';
 import { Layout } from '@/components/ui/Layout';
 import { Prompt } from '@/components/ui/Prompt';
 import { QuantityPicker } from '@/components/ui/QuantityPicker';
 import { Text } from '@/components/ui/Text';
+import { clx } from '@/utils/clx';
 import { useSettings } from '@/contexts/settings';
 import { AdminDraftOrder, AdminOrderLineItem, AdminPromotion } from '@medusajs/types';
 import type { FlashListRef } from '@shopify/flash-list';
@@ -66,63 +69,116 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
   const draftOrder = useCurrentDraftOrder();
   const updateDraftOrderItem = useUpdateDraftOrderItem();
   const thumbnail = item.thumbnail || item.product?.thumbnail || item.product?.images?.[0]?.url;
+  const [isPriceEditorVisible, setIsPriceEditorVisible] = React.useState(false);
+
+  const currencyCode = draftOrder.data?.draft_order.region?.currency_code || settings.data?.region?.currency_code;
+  const hasCustomPrice = item.compare_at_unit_price != null && item.compare_at_unit_price !== item.unit_price;
+
+  console.log(
+    `Item: ${item.id}, Quantity: ${item.quantity}, Price: ${item.unit_price}, Compare At Price: ${item.compare_at_unit_price}`,
+  );
+
+  const handlePriceUpdate = (newPrice: number) => {
+    // Determine the original price to preserve:
+    // If compare_at_unit_price is already set, keep it
+    // Otherwise, if we're changing the price, set it to the current unit_price
+    // This ensures the original price is always preserved once set
+    const compareAtPrice = item.compare_at_unit_price ?? item.unit_price;
+    console.log(`handlePriceUpdate(${newPrice}): ${compareAtPrice}`);
+
+    updateDraftOrderItem.mutate({
+      id: item.id,
+      update: {
+        quantity: item.quantity,
+        unit_price: newPrice,
+        compare_at_unit_price: compareAtPrice,
+      },
+    });
+  };
 
   return (
-    <SwipeableListItem
-      rightClassName="bg-white"
-      rightWidth={80}
-      rightContent={
-        <View className="h-full w-full flex-1 items-center justify-center p-2">
-          <Pressable
-            className="h-full w-full flex-1 items-center justify-center rounded-xl bg-error-500"
-            onPress={() => {
-              onRemove?.(item);
-            }}
-          >
-            <Trash2 size={24} color="white" />
-          </Pressable>
-        </View>
-      }
-    >
-      <View className="flex-row gap-4 bg-white py-6">
-        <View className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-xl bg-gray-200">
-          {thumbnail && <Image source={{ uri: thumbnail }} className="h-full w-full object-cover" />}
-        </View>
-        <View className="flex-1 flex-col gap-2">
-          <Text>{item.product_title}</Text>
-          {item.variant && item.variant.options && item.variant.options.length > 0 && (
-            <View className="flex-row flex-wrap items-center gap-x-2 gap-y-1">
-              {item.variant.options.map((option) => (
-                <View className="flex-row gap-1" key={option.id}>
-                  <Text className="text-sm text-gray-400">{option.option?.title || option.option_id}:</Text>
-                  <Text className="text-sm">{option.value}</Text>
-                </View>
-              ))}
+    <>
+      <SwipeableListItem
+        rightClassName="bg-white"
+        rightWidth={80}
+        rightContent={
+          <View className="h-full w-full flex-1 items-center justify-center p-2">
+            <Pressable
+              className="h-full w-full flex-1 items-center justify-center rounded-xl bg-error-500"
+              onPress={() => {
+                onRemove?.(item);
+              }}
+            >
+              <Trash2 size={24} color="white" />
+            </Pressable>
+          </View>
+        }
+      >
+        <View className="flex-row gap-4 bg-white py-6">
+          <View className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-xl bg-gray-200">
+            {thumbnail && <Image source={{ uri: thumbnail }} className="h-full w-full object-cover" />}
+          </View>
+          <View className="flex-1 flex-col gap-2">
+            <Text>{item.product_title}</Text>
+            {item.variant && item.variant.options && item.variant.options.length > 0 && (
+              <View className="flex-row flex-wrap items-center gap-x-2 gap-y-1">
+                {item.variant.options.map((option) => (
+                  <View className="flex-row gap-1" key={option.id}>
+                    <Text className="text-sm text-gray-400">{option.option?.title || option.option_id}:</Text>
+                    <Text className="text-sm">{option.value}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
+            <QuantityPicker
+              quantity={item.quantity}
+              max={item.variant?.inventory_quantity}
+              onQuantityChange={(quantity) =>
+                updateDraftOrderItem.mutate({
+                  id: item.id,
+                  update: {
+                    quantity,
+                    unit_price: item.unit_price,
+                    compare_at_unit_price: item.compare_at_unit_price,
+                  },
+                })
+              }
+              className="self-start"
+            />
+          </View>
+          <TouchableOpacity onPress={() => setIsPriceEditorVisible(true)} className="ml-auto">
+            <View className="items-end gap-1">
+              <Text>
+                {item.unit_price.toLocaleString('en-US', {
+                  style: 'currency',
+                  currency: currencyCode,
+                  currencyDisplay: 'narrowSymbol',
+                })}
+              </Text>
+              {hasCustomPrice && (
+                <Text className="text-sm text-gray-400 line-through">
+                  {item.compare_at_unit_price!.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: currencyCode,
+                    currencyDisplay: 'narrowSymbol',
+                  })}
+                </Text>
+              )}
             </View>
-          )}
-          <QuantityPicker
-            quantity={item.quantity}
-            max={item.variant?.inventory_quantity}
-            onQuantityChange={(quantity) =>
-              updateDraftOrderItem.mutate({
-                id: item.id,
-                update: {
-                  quantity,
-                },
-              })
-            }
-            className="self-start"
-          />
+          </TouchableOpacity>
         </View>
-        <Text className="ml-auto">
-          {item.unit_price.toLocaleString('en-US', {
-            style: 'currency',
-            currency: draftOrder.data?.draft_order.region?.currency_code || settings.data?.region?.currency_code,
-            currencyDisplay: 'narrowSymbol',
-          })}
-        </Text>
-      </View>
-    </SwipeableListItem>
+      </SwipeableListItem>
+
+      <PriceEditorDialog
+        visible={isPriceEditorVisible}
+        onClose={() => setIsPriceEditorVisible(false)}
+        onSubmit={handlePriceUpdate}
+        currentPrice={item.unit_price}
+        originalPrice={item.compare_at_unit_price}
+        currencyCode={currencyCode}
+        itemTitle={item.product_title || item.title}
+      />
+    </>
   );
 };
 
@@ -202,7 +258,10 @@ const PromotionItem: React.FC<{
   );
 };
 
-const CustomerBadge: React.FC<{ customer: AdminDraftOrder['customer'] }> = ({ customer }) => {
+const CustomerBadge: React.FC<{
+  customer: AdminDraftOrder['customer'];
+  highlight?: 'none' | 'required' | 'valid';
+}> = ({ customer, highlight = 'none' }) => {
   const updateDraftOrder = useUpdateDraftOrderCustomer();
   // TODO: pull this out and make sure that default customer is fetched before we can show customer badge
   const defaultCustomer = useCustomers({ email: DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL }, 1);
@@ -213,7 +272,11 @@ const CustomerBadge: React.FC<{ customer: AdminDraftOrder['customer'] }> = ({ cu
         onPress={() => router.push('/customer-lookup')}
         variant="outline"
         icon={<UserRoundPlus size={20} />}
-        className="mb-6 justify-between"
+        className={clx(
+          'mb-6 justify-between',
+          highlight === 'required' && 'border-2 border-red-500',
+          highlight === 'valid' && 'border-2 border-green-500',
+        )}
       >
         Add Customer
       </Button>
@@ -232,7 +295,11 @@ const CustomerBadge: React.FC<{ customer: AdminDraftOrder['customer'] }> = ({ cu
           },
         });
       }}
-      className="mb-6 flex-row items-center justify-between border-b border-gray-200 pb-6"
+      className={clx(
+        'mb-6 flex-row items-center justify-between border-b pb-6',
+        highlight === 'required' ? 'rounded-lg border-2 border-red-500 p-4' : 'border-gray-200',
+        highlight === 'valid' && 'rounded-lg border-2 border-green-500 p-4',
+      )}
     >
       {customerName.length > 0 ? (
         <View>
@@ -325,38 +392,74 @@ const CartSummaryHeader: React.FC<
     subtotal: number;
     discountTotal: number;
     currencyCode?: string;
+    originalSubtotal: number;
+    originalTaxTotal: number;
   }
-> = ({ onAddPromotion, isAddingPromotion, isLoading, taxTotal, subtotal, discountTotal, currencyCode }) => {
+> = ({
+  onAddPromotion,
+  isAddingPromotion,
+  isLoading,
+  taxTotal,
+  subtotal,
+  discountTotal,
+  currencyCode,
+  originalSubtotal,
+  originalTaxTotal,
+}) => {
+  const hasAdjustments = originalSubtotal !== subtotal || discountTotal > 0;
+
   return (
     <Animated.View className="pb-4 pt-6">
       <PromotionBadge onAddPromotion={onAddPromotion} isAddingPromotion={isAddingPromotion} />
       <View className="gap-2">
-        <View className="flex-row justify-between">
+        <View className="flex-row items-center justify-between">
           <Text className="text-sm text-gray-400">Taxes</Text>
           {isLoading ? (
             <View className="h-[17px] w-1/4 rounded-md bg-gray-200" />
           ) : (
-            <Text className="text-sm text-gray-400">
-              {taxTotal.toLocaleString('en-US', {
-                style: 'currency',
-                currency: currencyCode,
-                currencyDisplay: 'narrowSymbol',
-              })}
-            </Text>
+            <View className="flex-row items-center gap-2">
+              <Text className="text-sm text-gray-400">
+                {taxTotal.toLocaleString('en-US', {
+                  style: 'currency',
+                  currency: currencyCode,
+                  currencyDisplay: 'narrowSymbol',
+                })}
+              </Text>
+              {hasAdjustments && originalTaxTotal !== taxTotal && (
+                <Text className="text-sm text-gray-300 line-through">
+                  {originalTaxTotal.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: currencyCode,
+                    currencyDisplay: 'narrowSymbol',
+                  })}
+                </Text>
+              )}
+            </View>
           )}
         </View>
-        <View className="flex-row justify-between">
+        <View className="flex-row items-center justify-between">
           <Text className="text-sm text-gray-400">Subtotal</Text>
           {isLoading ? (
             <View className="h-[17px] w-1/4 rounded-md bg-gray-200" />
           ) : (
-            <Text className="text-sm text-gray-400">
-              {subtotal.toLocaleString('en-US', {
-                style: 'currency',
-                currency: currencyCode,
-                currencyDisplay: 'narrowSymbol',
-              })}
-            </Text>
+            <View className="flex-row items-center gap-2">
+              <Text className="text-sm text-gray-400">
+                {subtotal.toLocaleString('en-US', {
+                  style: 'currency',
+                  currency: currencyCode,
+                  currencyDisplay: 'narrowSymbol',
+                })}
+              </Text>
+              {hasAdjustments && originalSubtotal !== subtotal && (
+                <Text className="text-sm text-gray-300 line-through">
+                  {originalSubtotal.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: currencyCode,
+                    currencyDisplay: 'narrowSymbol',
+                  })}
+                </Text>
+              )}
+            </View>
           )}
         </View>
         {discountTotal > 0 && (
@@ -392,6 +495,22 @@ export default function CartScreen() {
     return Array.from(new Set(allCodes));
   }, [draftOrder.data]);
   const addedPromotions = useDraftOrderPromotions(draftOrderPromotionCodes);
+
+  // Calculate original prices (without adjustments)
+  const originalSubtotal = React.useMemo(() => {
+    return (
+      draftOrder.data?.draft_order.items.reduce((sum, item) => {
+        const priceToUse = item.compare_at_unit_price ?? item.unit_price;
+        return sum + priceToUse * item.quantity;
+      }, 0) ?? 0
+    );
+  }, [draftOrder.data]);
+
+  const originalTaxTotal = React.useMemo(() => {
+    if (!draftOrder.data) return 0;
+    const taxRate = draftOrder.data.draft_order.tax_total / (draftOrder.data.draft_order.subtotal || 1);
+    return Math.round(originalSubtotal * taxRate);
+  }, [draftOrder.data, originalSubtotal]);
   const addPromotion = useAddPromotion();
   const removePromotion = useRemovePromotion();
   const cancelDraftOrder = useCancelDraftOrder();
@@ -400,6 +519,17 @@ export default function CartScreen() {
   const itemsListRef = React.useRef<FlashListRef<LineItemType>>(null);
 
   const [isDialogVisible, setIsDialogVisible] = React.useState(false);
+  const [requiresShipping, setRequiresShipping] = React.useState(false);
+
+  // Determine customer state for highlighting
+  const isPosDefaultCustomer =
+    !draftOrder.data?.draft_order.customer ||
+    draftOrder.data?.draft_order.customer.email === DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL;
+
+  const customerHighlight = requiresShipping ? (isPosDefaultCustomer ? 'required' : 'valid') : 'none';
+
+  // Check if user can proceed to checkout
+  const canCheckout = !requiresShipping || !isPosDefaultCustomer;
 
   const onItemRemove = React.useCallback(
     (item: AdminOrderLineItem) => {
@@ -430,9 +560,19 @@ export default function CartScreen() {
           subtotal={draftOrder.data.draft_order.subtotal}
           discountTotal={draftOrder.data.draft_order.discount_total}
           currencyCode={draftOrder.data.draft_order.region?.currency_code || settings.data?.region?.currency_code}
+          originalSubtotal={originalSubtotal}
+          originalTaxTotal={originalTaxTotal}
         />
       ) : null,
-    [addPromotion, draftOrder.data, draftOrder.isFetching, isUpdatingDraftOrder, settings.data?.region?.currency_code],
+    [
+      addPromotion,
+      draftOrder.data,
+      draftOrder.isFetching,
+      isUpdatingDraftOrder,
+      settings.data?.region?.currency_code,
+      originalSubtotal,
+      originalTaxTotal,
+    ],
   );
 
   const renderItem = React.useCallback<ListRenderItem<LineItemType>>(
@@ -554,7 +694,7 @@ export default function CartScreen() {
     <>
       <Layout className="pb-6">
         <Text className="mb-6 text-4xl">Cart</Text>
-        <CustomerBadge customer={draftOrder.data.draft_order.customer} />
+        <CustomerBadge customer={draftOrder.data.draft_order.customer} highlight={customerHighlight} />
         <FlashList
           ref={itemsListRef}
           data={items}
@@ -569,20 +709,47 @@ export default function CartScreen() {
         <View>
           {windowDimensions.width >= 768 && windowDimensions.height >= 900 && cartSummary}
           <View className="mb-4 h-hairline bg-gray-200" />
-          <View className="mb-6 flex-row justify-between">
+          <View className="mb-6 flex-row items-center justify-between">
             <Text className="text-lg">Total</Text>
             {draftOrder.isFetching || isUpdatingDraftOrder > 0 ? (
               <View className="h-7 w-1/4 rounded-md bg-gray-200" />
             ) : (
-              <Text className="text-lg">
-                {draftOrder.data.draft_order.total?.toLocaleString('en-US', {
-                  style: 'currency',
-                  currency: draftOrder.data.draft_order.region?.currency_code || settings.data?.region?.currency_code,
-                  currencyDisplay: 'narrowSymbol',
-                })}
-              </Text>
+              <View className="flex-row items-center gap-2">
+                <Text className="text-lg">
+                  {draftOrder.data.draft_order.total?.toLocaleString('en-US', {
+                    style: 'currency',
+                    currency: draftOrder.data.draft_order.region?.currency_code || settings.data?.region?.currency_code,
+                    currencyDisplay: 'narrowSymbol',
+                  })}
+                </Text>
+                {(originalSubtotal !== draftOrder.data.draft_order.subtotal ||
+                  draftOrder.data.draft_order.discount_total > 0) && (
+                  <Text className="text-base text-gray-300 line-through">
+                    {(originalSubtotal + originalTaxTotal)?.toLocaleString('en-US', {
+                      style: 'currency',
+                      currency:
+                        draftOrder.data.draft_order.region?.currency_code || settings.data?.region?.currency_code,
+                      currencyDisplay: 'narrowSymbol',
+                    })}
+                  </Text>
+                )}
+              </View>
             )}
           </View>
+
+          <View className="mb-6">
+            <Checkbox
+              label="Order requires shipping"
+              checked={requiresShipping}
+              onCheckedChange={setRequiresShipping}
+            />
+            {requiresShipping && isPosDefaultCustomer && (
+              <InfoBanner colorScheme="warning" className="mt-4">
+                Please select a customer before proceeding. Orders requiring shipping must have customer information.
+              </InfoBanner>
+            )}
+          </View>
+
           <View className="flex-row gap-2">
             <Button
               variant="outline"
@@ -596,13 +763,22 @@ export default function CartScreen() {
             <Button
               className="flex-1"
               disabled={
-                draftOrder.data.draft_order.items.length === 0 || draftOrder.isFetching || isUpdatingDraftOrder > 0
+                draftOrder.data.draft_order.items.length === 0 ||
+                draftOrder.isFetching ||
+                isUpdatingDraftOrder > 0 ||
+                !canCheckout
               }
               onPress={() => {
                 if (!draftOrder.data?.draft_order.id) {
                   return;
                 }
-                router.push(`/checkout/${draftOrder.data.draft_order.id}`);
+                router.push({
+                  pathname: '/checkout/[draftOrderId]',
+                  params: {
+                    draftOrderId: draftOrder.data.draft_order.id,
+                    requiresShipping: requiresShipping.toString(),
+                  },
+                });
               }}
             >
               Checkout

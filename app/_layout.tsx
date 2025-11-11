@@ -6,6 +6,7 @@ import { SplashScreenController } from '@/components/SplashScreenController';
 import { toastConfig } from '@/config/toast';
 import { AuthProvider, useAuthCtx } from '@/contexts/auth';
 import { useSettings } from '@/contexts/settings';
+import { StripeTerminalWrapper } from '@/contexts/stripe-terminal';
 import { useColorScheme } from '@/hooks/useColorScheme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
@@ -42,7 +43,7 @@ function App() {
     !!settings.data.region &&
     !!settings.data.stock_location;
 
-  return (
+  const content = (
     <Stack>
       <Stack.Protected guard={auth.state.status === 'authenticated' && isSetupComplete}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
@@ -109,6 +110,13 @@ function App() {
       <Stack.Screen options={{ headerShown: false }} name="index" />
     </Stack>
   );
+
+  // Only wrap with StripeTerminalWrapper when authenticated
+  if (auth.state.status === 'authenticated') {
+    return <StripeTerminalWrapper>{content}</StripeTerminalWrapper>;
+  }
+
+  return content;
 }
 
 export default function RootLayout() {

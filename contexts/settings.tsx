@@ -1,7 +1,7 @@
 import { showErrorToast } from '@/utils/errors';
+import { storage } from '@/utils/storage';
 import Medusa from '@medusajs/js-sdk';
 import { DefaultError, useMutation, UseMutationOptions, useQuery, useQueryClient } from '@tanstack/react-query';
-import * as SecureStore from 'expo-secure-store';
 import * as React from 'react';
 import { useAuthCtx } from './auth';
 
@@ -35,9 +35,9 @@ export const useSettings = () => {
         },
       });
 
-      const sales_channel_id = await SecureStore.getItemAsync('sales_channel_id');
-      const stock_location_id = await SecureStore.getItemAsync('stock_location_id');
-      const region_id = await SecureStore.getItemAsync('region_id');
+      const sales_channel_id = await storage.getItemAsync('sales_channel_id');
+      const stock_location_id = await storage.getItemAsync('stock_location_id');
+      const region_id = await storage.getItemAsync('region_id');
 
       if (!sales_channel_id && !stock_location_id && !region_id) {
         return null;
@@ -93,13 +93,13 @@ export const useUpdateSettings = (
       }
 
       if (settings.sales_channel_id) {
-        await SecureStore.setItemAsync('sales_channel_id', settings.sales_channel_id);
+        await storage.setItemAsync('sales_channel_id', settings.sales_channel_id);
       }
       if (settings.stock_location_id) {
-        await SecureStore.setItemAsync('stock_location_id', settings.stock_location_id);
+        await storage.setItemAsync('stock_location_id', settings.stock_location_id);
       }
       if (settings.region_id) {
-        await SecureStore.setItemAsync('region_id', settings.region_id);
+        await storage.setItemAsync('region_id', settings.region_id);
       }
     },
     ...options,
@@ -125,10 +125,10 @@ export const useClearSettings = () => {
   return useMutation({
     mutationKey: ['clear-settings'],
     mutationFn: async () => {
-      await SecureStore.deleteItemAsync('sales_channel_id');
-      await SecureStore.deleteItemAsync('stock_location_id');
-      await SecureStore.deleteItemAsync('region_id');
-      await SecureStore.deleteItemAsync('draft_order_id');
+      await storage.deleteItemAsync('sales_channel_id');
+      await storage.deleteItemAsync('stock_location_id');
+      await storage.deleteItemAsync('region_id');
+      await storage.deleteItemAsync('draft_order_id');
       return null;
     },
     onSuccess: async () => {
