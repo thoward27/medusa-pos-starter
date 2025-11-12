@@ -68,6 +68,9 @@
         "./plugins/withStripeTerminal.js",
         {
           "merchantDisplayName": "Agilo POS",
+          "locationWhenInUsePermission": "Location access is required to accept payments.",
+          "bluetoothAlwaysUsagePermission": "This app uses Bluetooth to connect to supported card readers.",
+          "bluetoothPeripheralPermission": "Connecting to supported card readers requires Bluetooth access.",
           "nfcUsageDescription": "Agilo POS needs access to NFC to accept contactless payments"
         }
       ]
