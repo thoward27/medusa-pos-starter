@@ -9,7 +9,7 @@
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
-      "bundleIdentifier": "com.agilo.pos",
+      "bundleIdentifier": "com.tomhoward.agilopos",
       "supportsTablet": true
     },
     "android": {

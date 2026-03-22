@@ -13,6 +13,13 @@
     },
     "production": {
       "autoIncrement": true
+    },
+    "local-release": {
+      "ios": {
+        "resourceClass": "m-medium",
+        "distribution": "internal",
+        "buildConfiguration": "Release"
+      }
     }
   },
   "submit": {

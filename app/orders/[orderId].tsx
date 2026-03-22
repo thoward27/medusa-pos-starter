@@ -1,8 +1,9 @@
 import { DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL } from '@/api/hooks/draft-orders';
-import { useOrder } from '@/api/hooks/orders';
+import { useAdvanceFulfillment, useOrder } from '@/api/hooks/orders';
 import { InfoBanner } from '@/components/InfoBanner';
 import { LoadingBanner } from '@/components/LoadingBanner';
 import { BottomSheet } from '@/components/ui/BottomSheet';
+import { Button } from '@/components/ui/Button';
 import { FulfillmentStatus, OrderStatus, PaymentStatus } from '@/components/ui/OrderStatus';
 import { Text } from '@/components/ui/Text';
 import { useSettings } from '@/contexts/settings';
@@ -233,6 +234,69 @@ const OrderInformation: React.FC<{
   );
 };
 
+const FulfillmentActions: React.FC<{ order: AdminOrder }> = ({ order }) => {
+  const mutation = useAdvanceFulfillment(order.id);
+  const status = order.fulfillment_status;
+
+  if (status === 'delivered' || status === 'canceled') return null;
+
+  const fulfillment = order.fulfillments?.[0];
+  // fulfillment.items exists at runtime via +fulfillments.* but isn't on the base type
+  const fulfillmentWithItems = fulfillment as typeof fulfillment & { items?: { id: string; quantity: number }[] };
+
+  const actions: {
+    action: 'fulfill' | 'ship' | 'deliver';
+    label: string;
+    variant: 'solid' | 'outline';
+    show: boolean;
+  }[] = [
+    {
+      action: 'fulfill',
+      label: 'Mark as Fulfilled',
+      variant: 'solid',
+      show: status === 'not_fulfilled' || status === 'partially_fulfilled',
+    },
+    {
+      action: 'ship',
+      label: 'Mark as Shipped',
+      variant: 'outline',
+      show: status === 'fulfilled' || status === 'partially_shipped',
+    },
+    {
+      action: 'deliver',
+      label: 'Mark as Delivered',
+      variant: 'outline',
+      show: status === 'shipped' || status === 'partially_delivered',
+    },
+  ];
+
+  const visibleActions = actions.filter((a) => a.show);
+  if (visibleActions.length === 0) return null;
+
+  return (
+    <View className="mt-6 gap-3">
+      {visibleActions.map(({ action, label, variant }) => (
+        <Button
+          key={action}
+          variant={variant}
+          isPending={mutation.isPending}
+          onPress={() =>
+            mutation.mutate({
+              action,
+              orderItems: order.items.map((item) => ({ id: item.id, quantity: item.quantity })),
+              fulfillment: fulfillmentWithItems
+                ? { id: fulfillmentWithItems.id, items: fulfillmentWithItems.items ?? [] }
+                : undefined,
+            })
+          }
+        >
+          {label}
+        </Button>
+      ))}
+    </View>
+  );
+};
+
 const OrderDetails: React.FC<{ animateOut: (callback?: () => void) => void }> = ({ animateOut }) => {
   const { orderId, orderNumber, orderDate } = useLocalSearchParams<{
     orderId: string;
@@ -326,7 +390,12 @@ const OrderDetails: React.FC<{ animateOut: (callback?: () => void) => void }> = 
           className="shrink grow-0"
           contentContainerClassName="pt-4 grow-0 pb-safe-offset-6"
           ListFooterComponentClassName="mt-14"
-          ListFooterComponent={<OrderInformation order={orderQuery.data.order} currency={currency} />}
+          ListFooterComponent={
+            <>
+              <OrderInformation order={orderQuery.data.order} currency={currency} />
+              <FulfillmentActions order={orderQuery.data.order} />
+            </>
+          }
           showsVerticalScrollIndicator={false}
           keyboardDismissMode="on-drag"
         />
