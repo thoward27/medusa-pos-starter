@@ -13,15 +13,37 @@ import { clx } from '@/utils/clx';
 import { AdminCustomer } from '@medusajs/types';
 import { router, useLocalSearchParams } from 'expo-router';
 import * as React from 'react';
+import { useFormContext } from 'react-hook-form';
 import { FlatList, TouchableOpacity, View } from 'react-native';
 import { z } from 'zod/v4';
 
+const generateDefaultEmail = (phone: string) => {
+  const digits = phone.replace(/\D/g, '');
+  return digits ? `pos-customer+${digits}@taylormade.cc` : '';
+};
+
 const customerFormSchema = z.object({
-  email: z.email('Please enter a valid email address').min(3, 'Email is required'),
+  email: z.email('Please enter a valid email address').optional().or(z.literal('')),
   first_name: z.string().optional(),
   last_name: z.string().optional(),
   phone: z.string().optional(),
 });
+
+const EmailFieldWithPhonePlaceholder: React.FC = () => {
+  const { watch } = useFormContext();
+  const phone = watch('phone');
+  const defaultEmail = generateDefaultEmail(phone || '');
+
+  return (
+    <TextField
+      name="email"
+      placeholder={defaultEmail || 'Email Address'}
+      autoComplete="off"
+      autoCapitalize="none"
+      inputMode="email"
+    />
+  );
+};
 
 const AddNewCustomerButton: React.FC<{ onNewCustomer: (customer: AdminCustomer) => void }> = ({ onNewCustomer }) => {
   const [isOpen, setIsOpen] = React.useState(false);
@@ -48,7 +70,9 @@ const AddNewCustomerButton: React.FC<{ onNewCustomer: (customer: AdminCustomer) 
         <Form
           schema={customerFormSchema}
           onSubmit={(data, form) => {
-            createCustomer.mutate(data, {
+            const email = data.email || generateDefaultEmail(data.phone || '');
+            if (!email) return;
+            createCustomer.mutate({ first_name: data.first_name, last_name: data.last_name, phone: data.phone, email }, {
               onSuccess: (res) => {
                 onNewCustomer(res.customer);
                 setIsOpen(false);
@@ -57,16 +81,10 @@ const AddNewCustomerButton: React.FC<{ onNewCustomer: (customer: AdminCustomer) 
             });
           }}
         >
-          <TextField
-            name="email"
-            placeholder="Email Address"
-            autoComplete="off"
-            autoCapitalize="none"
-            inputMode="email"
-          />
           <TextField name="first_name" placeholder="First Name" autoComplete="off" autoCapitalize="words" />
           <TextField name="last_name" placeholder="Last Name" autoComplete="off" autoCapitalize="words" />
           <TextField name="phone" placeholder="Phone Number" autoComplete="off" autoCapitalize="none" inputMode="tel" />
+          <EmailFieldWithPhonePlaceholder />
           <FormButton>Create Customer</FormButton>
         </Form>
       </Dialog>
@@ -96,7 +114,7 @@ const CustomersList: React.FC<{
 }> = ({ q, selectedCustomerId, onCustomerSelect }) => {
   const customersQuery = useCustomers({
     q,
-    order: 'email',
+    order: 'first_name',
   });
 
   const renderCustomer = React.useCallback(
@@ -135,7 +153,7 @@ const CustomersList: React.FC<{
                   },
             )}
           >
-            {item.email}
+            {item.email?.includes('@taylormade.cc') ? item.phone : item.email}
           </Text>
         </TouchableOpacity>
       );
