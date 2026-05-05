@@ -64,10 +64,7 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem }> = ({ item }) => {
 };
 
 export default function CheckoutScreen() {
-  const { draftOrderId, requiresShipping: requiresShippingParam } = useLocalSearchParams<{
-    draftOrderId: string;
-    requiresShipping?: string;
-  }>();
+  const { draftOrderId } = useLocalSearchParams<{ draftOrderId: string }>();
   const settings = useSettings();
   const draftOrder = useDraftOrderOrOrder(draftOrderId);
   const completeOrder = useCompleteOrder(draftOrderId);
@@ -75,13 +72,9 @@ export default function CheckoutScreen() {
   const [currentStep, setCurrentStep] = useState<CheckoutStep>('details');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
 
-  // Get requiresShipping from route params (passed from cart screen)
-  const requiresShipping = requiresShippingParam === 'true';
-
   const handleCashPayment = async () => {
     try {
       await completeOrder.mutateAsync({
-        requiresShipping,
         payment: {
           type: 'cash',
         },
@@ -94,7 +87,6 @@ export default function CheckoutScreen() {
   const handleCardPaymentSuccess = async (paymentIntentId: string) => {
     try {
       await completeOrder.mutateAsync({
-        requiresShipping,
         payment: {
           type: 'stripe_payment_intent',
           paymentIntentId,

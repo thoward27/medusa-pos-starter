@@ -16,7 +16,6 @@ interface PaymentDetails {
 }
 
 interface CompleteOrderParams {
-  requiresShipping: boolean;
   payment: PaymentDetails;
 }
 
@@ -40,7 +39,7 @@ export const useCompleteOrder = (
 
   return useMutation({
     mutationKey: ['order', 'complete', draftOrderId],
-    mutationFn: async ({ requiresShipping, payment }: CompleteOrderParams) => {
+    mutationFn: async ({ payment }: CompleteOrderParams) => {
       try {
         // Step 1: Retrieve the draft order with all necessary fields
         const { draft_order } = await sdk.admin.draftOrder.retrieve(draftOrderId, {
@@ -91,7 +90,9 @@ export const useCompleteOrder = (
 
         // Step 3: Convert draft order to order and mark as paid.
         let order = await sdk.admin.draftOrder
-          .convertToOrder(draftOrderId, { fields: '+id,+payment_collections.*,+items' })
+          .convertToOrder(draftOrderId, {
+            fields: '+id,+payment_collections.*,+items.id,+items.quantity,+items.requires_shipping',
+          })
           .then(async ({ order }) => {
             let paymentCollection = order.payment_collections[0];
             await sdk.admin.paymentCollection.markAsPaid(paymentCollection.id, {
@@ -100,23 +101,25 @@ export const useCompleteOrder = (
             return order;
           });
 
-        // Step 4: If this order does not require shipping, create a fulfillment and mark it as delivered.
-        if (!requiresShipping) {
-          await sdk.admin.order
-            .createFulfillment(
-              draftOrderId,
-              {
-                items: order.items.map((item) => ({
-                  id: item.id,
-                  quantity: item.quantity,
-                })),
-              },
-              { fields: '+id,+fulfillments.*' },
-            )
-            .then(async ({ order }) => {
-              console.log('Fulfillment created:', order.id);
-              await sdk.admin.order.markAsDelivered(order.id, order.fulfillments![0].id);
-            });
+        // Step 4: Auto-fulfill any line items that don't require shipping (customer is
+        // taking them in person). Items that require shipping are left for the regular
+        // shipping workflow. Medusa rejects mixed-shipping fulfillments, so we must split.
+        const nonShippingItems = order.items.filter((item) => !item.requires_shipping);
+        if (nonShippingItems.length > 0) {
+          const { order: fulfilledOrder } = await sdk.admin.order.createFulfillment(
+            draftOrderId,
+            {
+              items: nonShippingItems.map((item) => ({
+                id: item.id,
+                quantity: item.quantity,
+              })),
+            },
+            { fields: '+id,+fulfillments.id,+fulfillments.requires_shipping' },
+          );
+          const newFulfillment = fulfilledOrder.fulfillments?.find((f) => !f.requires_shipping);
+          if (newFulfillment) {
+            await sdk.admin.order.markAsDelivered(fulfilledOrder.id, newFulfillment.id);
+          }
         }
 
         // Step 6: Complete the order

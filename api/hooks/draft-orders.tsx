@@ -85,13 +85,13 @@ export const useDraftOrderOrOrder = (draftOrderId: string) => {
       return sdk.admin.draftOrder
         .retrieve(draftOrderId, {
           fields:
-            '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+customer.*',
+            '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+customer.*,+metadata',
         })
         .then((res) => res.draft_order)
         .catch(async () => {
           const res = await sdk.admin.order.retrieve(draftOrderId, {
             fields:
-              '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+customer.*',
+              '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+customer.*,+metadata',
           });
           return res.order;
         });
@@ -114,7 +114,7 @@ export const useCurrentDraftOrder = () => {
 
       return sdk.admin.draftOrder.retrieve(draftOrderId, {
         fields:
-          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.compare_at_unit_price,+items.unit_price,+customer.*',
+          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.compare_at_unit_price,+items.unit_price,+items.requires_shipping,+items.product.variants.id,+items.product.variants.title,+items.product.variants.requires_shipping,+customer.*,+metadata',
       });
     },
   });
@@ -424,6 +424,111 @@ export const useUpdateDraftOrderItem = (
       }
 
       return options?.onSettled?.(...args);
+    },
+  });
+};
+
+interface SwapLineItemVariantParams {
+  itemId: string;
+  newVariantId: string;
+  quantity: number;
+  unit_price?: number | null;
+  compare_at_unit_price?: number | null;
+}
+
+export const useSwapLineItemVariant = (
+  options?: Omit<
+    UseMutationOptions<AdminDraftOrderPreviewResponse, Error, SwapLineItemVariantParams, unknown>,
+    'mutationKey' | 'mutationFn'
+  >,
+) => {
+  const sdk = useMedusaSdk();
+  const queryClient = useQueryClient();
+  const getOrSetDraftOrderId = useGetOrSetDraftOrderId();
+
+  return useMutation({
+    mutationKey: ['draft-order', 'items', 'swap-variant'],
+    mutationFn: async ({ itemId, newVariantId, quantity, unit_price, compare_at_unit_price }) => {
+      const draftOrderId = await getOrSetDraftOrderId();
+      await sdk.admin.draftOrder.beginEdit(draftOrderId);
+      try {
+        await sdk.admin.draftOrder.updateItem(draftOrderId, itemId, { quantity: 0 });
+        await sdk.admin.draftOrder.addItems(draftOrderId, {
+          items: [
+            {
+              variant_id: newVariantId,
+              quantity,
+              unit_price: unit_price ?? undefined,
+              compare_at_unit_price: compare_at_unit_price ?? undefined,
+            },
+          ],
+        });
+        return await sdk.admin.draftOrder.confirmEdit(draftOrderId);
+      } catch (error) {
+        await sdk.admin.draftOrder.cancelEdit(draftOrderId);
+        throw error;
+      }
+    },
+    ...options,
+    onSettled: async (...args) => {
+      if (queryClient.isMutating({ mutationKey: ['draft-order'], exact: false }) === 1) {
+        await queryClient.invalidateQueries({
+          queryKey: ['draft-order'],
+          exact: false,
+        });
+      }
+      return options?.onSettled?.(...args);
+    },
+    onError(error, variables, context) {
+      showErrorToast(error);
+      return options?.onError?.(error, variables, context);
+    },
+  });
+};
+
+interface UpdateDraftOrderNoteParams {
+  note: string;
+  existingMetadata?: Record<string, unknown> | null;
+}
+
+export const useUpdateDraftOrderNote = (
+  options?: Omit<
+    UseMutationOptions<AdminDraftOrderPreviewResponse, Error, UpdateDraftOrderNoteParams, unknown>,
+    'mutationKey' | 'mutationFn'
+  >,
+) => {
+  const sdk = useMedusaSdk();
+  const queryClient = useQueryClient();
+  const getOrSetDraftOrderId = useGetOrSetDraftOrderId();
+
+  return useMutation({
+    mutationKey: ['draft-order', 'note', 'update'],
+    mutationFn: async ({ note, existingMetadata }) => {
+      const draftOrderId = await getOrSetDraftOrderId();
+      await sdk.admin.draftOrder.beginEdit(draftOrderId);
+      try {
+        await sdk.admin.draftOrder.update(draftOrderId, {
+          metadata: { ...(existingMetadata ?? {}), note },
+        });
+        return await sdk.admin.draftOrder.confirmEdit(draftOrderId);
+      } catch (error) {
+        await sdk.admin.draftOrder.cancelEdit(draftOrderId);
+        throw error;
+      }
+    },
+    ...options,
+    onSettled: async (...args) => {
+      if (queryClient.isMutating({ mutationKey: ['draft-order'], exact: false }) === 1) {
+        await queryClient.invalidateQueries({
+          queryKey: ['draft-order'],
+          exact: false,
+        });
+      }
+      return options?.onSettled?.(...args);
+    },
+    onError(error, variables, context) {
+      showErrorToast(error);
+      return options?.onError?.(error, variables, context);
     },
   });
 };

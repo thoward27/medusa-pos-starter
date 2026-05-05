@@ -52,7 +52,7 @@ export const useOrder = (orderId: string) => {
     queryFn: async () => {
       return sdk.admin.order.retrieve(orderId, {
         fields:
-          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+customer.*,+fulfillments.*',
+          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+customer.*,+fulfillments.*,+metadata',
       });
     },
     enabled: !!orderId,

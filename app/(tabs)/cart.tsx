@@ -6,8 +6,10 @@ import {
   useCurrentDraftOrder,
   useDraftOrderPromotions,
   useRemovePromotion,
+  useSwapLineItemVariant,
   useUpdateDraftOrderCustomer,
   useUpdateDraftOrderItem,
+  useUpdateDraftOrderNote,
 } from '@/api/hooks/draft-orders';
 import { Form } from '@/components/form/Form';
 import { FormButton } from '@/components/form/FormButton';
@@ -37,7 +39,7 @@ import { FlashList, ListRenderItem } from '@shopify/flash-list';
 import { useIsMutating } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import * as React from 'react';
-import { Image, Pressable, TouchableOpacity, View } from 'react-native';
+import { Image, Pressable, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { SequencedTransition, SlideOutLeft } from 'react-native-reanimated';
 import { useSafeAreaFrame } from 'react-native-safe-area-context';
 import * as z from 'zod/v4';
@@ -61,6 +63,8 @@ const ItemCell = React.forwardRef<Animated.View>((props, ref) => {
 });
 ItemCell.displayName = 'ItemCell';
 
+type VariantWithShipping = { id: string; requires_shipping?: boolean | null };
+
 const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: AdminOrderLineItem) => void }> = ({
   item,
   onRemove,
@@ -68,11 +72,19 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
   const settings = useSettings();
   const draftOrder = useCurrentDraftOrder();
   const updateDraftOrderItem = useUpdateDraftOrderItem();
+  const swapLineItemVariant = useSwapLineItemVariant();
   const thumbnail = item.thumbnail || item.product?.thumbnail || item.product?.images?.[0]?.url;
   const [isPriceEditorVisible, setIsPriceEditorVisible] = React.useState(false);
 
   const currencyCode = draftOrder.data?.draft_order.region?.currency_code || settings.data?.region?.currency_code;
   const hasCustomPrice = item.compare_at_unit_price != null && item.compare_at_unit_price !== item.unit_price;
+
+  // The product's other variants — used to find a shipping/non-shipping twin to swap to.
+  const productVariants = (item.product?.variants ?? []) as VariantWithShipping[];
+  const shippingTwin = productVariants.find(
+    (v) => v.id !== item.variant_id && Boolean(v.requires_shipping) !== item.requires_shipping,
+  );
+  const canToggleShipping = !!shippingTwin && !swapLineItemVariant.isPending;
 
   console.log(
     `Item: ${item.id}, Quantity: ${item.quantity}, Price: ${item.unit_price}, Compare At Price: ${item.compare_at_unit_price}`,
@@ -144,6 +156,21 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
                 })
               }
               className="self-start"
+            />
+            <Checkbox
+              label="Requires shipping"
+              checked={item.requires_shipping}
+              disabled={!canToggleShipping}
+              onCheckedChange={() => {
+                if (!shippingTwin) return;
+                swapLineItemVariant.mutate({
+                  itemId: item.id,
+                  newVariantId: shippingTwin.id,
+                  quantity: item.quantity,
+                  unit_price: item.unit_price,
+                  compare_at_unit_price: item.compare_at_unit_price,
+                });
+              }}
             />
           </View>
           <TouchableOpacity onPress={() => setIsPriceEditorVisible(true)} className="ml-auto">
@@ -325,6 +352,47 @@ const CustomerBadge: React.FC<{
         </TouchableOpacity>
       </View>
     </TouchableOpacity>
+  );
+};
+
+const OrderNoteInput: React.FC<{
+  initialValue: string;
+  existingMetadata: Record<string, unknown> | null | undefined;
+}> = ({ initialValue, existingMetadata }) => {
+  const updateNote = useUpdateDraftOrderNote();
+  const [value, setValue] = React.useState(initialValue);
+  const lastSavedRef = React.useRef(initialValue);
+
+  // If the source value changes (e.g. cart reloaded), pull the new value in unless
+  // the user has unsaved local edits.
+  React.useEffect(() => {
+    if (initialValue !== lastSavedRef.current && value === lastSavedRef.current) {
+      setValue(initialValue);
+      lastSavedRef.current = initialValue;
+    }
+  }, [initialValue, value]);
+
+  const handleSave = () => {
+    if (value === lastSavedRef.current) return;
+    lastSavedRef.current = value;
+    updateNote.mutate({ note: value, existingMetadata });
+  };
+
+  return (
+    <View className="mb-6">
+      <Text className="mb-2 text-sm text-gray-400">Order notes</Text>
+      <TextInput
+        multiline
+        numberOfLines={3}
+        placeholder="Notes for this order…"
+        placeholderTextColor="#b5b5b5"
+        value={value}
+        onChangeText={setValue}
+        onBlur={handleSave}
+        className="min-h-20 rounded-xl border border-gray-200 bg-white px-3 py-3 align-top"
+        textAlignVertical="top"
+      />
+    </View>
   );
 };
 
@@ -519,17 +587,23 @@ export default function CartScreen() {
   const itemsListRef = React.useRef<FlashListRef<LineItemType>>(null);
 
   const [isDialogVisible, setIsDialogVisible] = React.useState(false);
-  const [requiresShipping, setRequiresShipping] = React.useState(false);
+
+  // Derive shipping requirement from items themselves — any item with requires_shipping
+  // means the order needs a real customer (for the shipping address).
+  const orderRequiresShipping = React.useMemo(
+    () => draftOrder.data?.draft_order.items.some((item) => item.requires_shipping) ?? false,
+    [draftOrder.data],
+  );
 
   // Determine customer state for highlighting
   const isPosDefaultCustomer =
     !draftOrder.data?.draft_order.customer ||
     draftOrder.data?.draft_order.customer.email === DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL;
 
-  const customerHighlight = requiresShipping ? (isPosDefaultCustomer ? 'required' : 'valid') : 'none';
+  const customerHighlight = orderRequiresShipping ? (isPosDefaultCustomer ? 'required' : 'valid') : 'none';
 
   // Check if user can proceed to checkout
-  const canCheckout = !requiresShipping || !isPosDefaultCustomer;
+  const canCheckout = !orderRequiresShipping || !isPosDefaultCustomer;
 
   const onItemRemove = React.useCallback(
     (item: AdminOrderLineItem) => {
@@ -737,18 +811,20 @@ export default function CartScreen() {
             )}
           </View>
 
-          <View className="mb-6">
-            <Checkbox
-              label="Order requires shipping"
-              checked={requiresShipping}
-              onCheckedChange={setRequiresShipping}
-            />
-            {requiresShipping && isPosDefaultCustomer && (
-              <InfoBanner colorScheme="warning" className="mt-4">
-                Please select a customer before proceeding. Orders requiring shipping must have customer information.
-              </InfoBanner>
-            )}
-          </View>
+          {orderRequiresShipping && isPosDefaultCustomer && (
+            <InfoBanner colorScheme="warning" className="mb-6">
+              Please select a customer before proceeding. Orders with shipping items must have customer information.
+            </InfoBanner>
+          )}
+
+          <OrderNoteInput
+            initialValue={
+              typeof draftOrder.data.draft_order.metadata?.note === 'string'
+                ? (draftOrder.data.draft_order.metadata.note as string)
+                : ''
+            }
+            existingMetadata={draftOrder.data.draft_order.metadata}
+          />
 
           <View className="flex-row gap-2">
             <Button
@@ -776,7 +852,6 @@ export default function CartScreen() {
                   pathname: '/checkout/[draftOrderId]',
                   params: {
                     draftOrderId: draftOrder.data.draft_order.id,
-                    requiresShipping: requiresShipping.toString(),
                   },
                 });
               }}

@@ -40,6 +40,8 @@ const EmailFieldWithPhonePlaceholder: React.FC = () => {
       placeholder={defaultEmail || 'Email Address'}
       autoComplete="off"
       autoCapitalize="none"
+      autoCorrect={false}
+      spellCheck={false}
       inputMode="email"
     />
   );

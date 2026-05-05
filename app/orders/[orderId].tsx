@@ -71,6 +71,17 @@ const CustomerInformation: React.FC<{
   );
 };
 
+const OrderNotes: React.FC<{ order: AdminOrder }> = ({ order }) => {
+  const note = typeof order.metadata?.note === 'string' ? order.metadata.note : '';
+  if (!note) return null;
+  return (
+    <View className="mb-4 gap-2">
+      <Text className="text-xl">Notes</Text>
+      <Text className="text-sm">{note}</Text>
+    </View>
+  );
+};
+
 const OrderInformation: React.FC<{
   order: AdminOrder;
   currency: string;
@@ -102,6 +113,7 @@ const OrderInformation: React.FC<{
         </View>
       </View>
       <CustomerInformation order={order} />
+      <OrderNotes order={order} />
       <Text className="mb-4 text-xl">Summary</Text>
       <View className="gap-2">
         <View className="flex-row items-center justify-between gap-4">
