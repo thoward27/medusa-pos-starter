@@ -16,6 +16,9 @@ interface TextFieldProps extends Omit<TextInputProps, 'value' | 'onChangeText'> 
   inputClassName?: string;
   errorClassName?: string;
   errorVariation?: 'default' | 'inline';
+  // Optional transform applied to input on change and to the displayed value,
+  // e.g. live phone-number masking. Should be idempotent.
+  formatValue?: (text: string) => string;
 }
 
 export function TextField({
@@ -27,6 +30,7 @@ export function TextField({
   errorClassName = '',
   errorVariation = 'default',
   secureTextEntry,
+  formatValue,
   ...textInputProps
 }: TextFieldProps) {
   const { control } = useFormContext();
@@ -93,9 +97,9 @@ export function TextField({
           )}
           placeholder={floatingPlaceholder ? undefined : placeholder}
           placeholderTextColor="#b5b5b5"
-          value={value || ''}
+          value={formatValue ? formatValue(value || '') : value || ''}
           secureTextEntry={secureTextEntry && !showValue}
-          onChangeText={onChange}
+          onChangeText={(text) => onChange(formatValue ? formatValue(text) : text)}
           onBlur={() => {
             setIsFocused(false);
             onBlur();
