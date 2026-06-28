@@ -5,19 +5,21 @@ import {
 } from '@/api/hooks/draft-orders';
 import { useCompleteOrder } from '@/api/hooks/payments';
 import { STRIPE_CONFIG } from '@/config/stripe';
+import { Image } from 'expo-image';
 import { router, useLocalSearchParams } from 'expo-router';
-import React, { useState } from 'react';
-import { Image, ScrollView, View } from 'react-native';
+import React, { useState, useRef, useCallback } from 'react';
+import { ScrollView, View } from 'react-native';
 import { Dialog } from '@/components/ui/Dialog';
 import { InfoBanner } from '@/components/InfoBanner';
 import { PaymentSelection, PaymentMethod } from '@/components/PaymentSelection';
-import { CardPayment } from '@/components/CardPayment';
+import { CardPayment, CardPaymentHandle } from '@/components/CardPayment';
 import { CheckoutSkeleton } from '@/components/skeletons/CheckoutSkeleton';
 import { Button } from '@/components/ui/Button';
 import { Layout } from '@/components/ui/Layout';
 import { Text } from '@/components/ui/Text';
 import { useSettings } from '@/contexts/settings';
 import { formatDate } from '@/utils/date';
+import { stableCacheKey } from '@/utils/images';
 import { AdminOrderLineItem } from '@medusajs/types';
 import { StripeProvider } from '@stripe/stripe-react-native';
 import { FlashList, ListRenderItem } from '@shopify/flash-list';
@@ -32,15 +34,17 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem }> = ({ item }) => {
 
   return (
     <View className="flex-row gap-4 p-4">
-      {thumbnail && (
-        <Image
-          source={{
-            uri: thumbnail,
-          }}
-          className="h-16 w-16 rounded-lg bg-gray-200"
-        />
-      )}
-      {!thumbnail && <View className="h-16 w-16 rounded-lg bg-gray-200" />}
+      <View className="h-16 w-16 overflow-hidden rounded-lg bg-gray-200">
+        {thumbnail && (
+          <Image
+            source={{ uri: thumbnail, cacheKey: stableCacheKey(thumbnail) }}
+            cachePolicy="memory-disk"
+            recyclingKey={item.id}
+            contentFit="cover"
+            style={{ width: '100%', height: '100%' }}
+          />
+        )}
+      </View>
 
       <View className="flex-1 justify-between">
         <View>
@@ -70,7 +74,20 @@ export default function CheckoutScreen() {
   const completeOrder = useCompleteOrder(draftOrderId);
 
   const [currentStep, setCurrentStep] = useState<CheckoutStep>('details');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+  // Default to card: completing a cash order is hard to undo, so we make the
+  // safer/more common path the default and require an explicit switch to cash.
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
+
+  // Card payment state lifted here so the screen footer can host the action
+  // button (Charge Card) alongside Back, matching the cash checkout layout.
+  const cardPaymentRef = useRef<CardPaymentHandle>(null);
+  const [cardCanCharge, setCardCanCharge] = useState(false);
+  const [cardBusy, setCardBusy] = useState(false);
+
+  const handleCardStatusChange = useCallback(({ canCharge, busy }: { canCharge: boolean; busy: boolean }) => {
+    setCardCanCharge(canCharge);
+    setCardBusy(busy);
+  }, []);
 
   const handleCashPayment = async () => {
     try {
@@ -322,26 +339,32 @@ export default function CheckoutScreen() {
               {paymentMethod === 'card' && (
                 <StripeProvider publishableKey={STRIPE_CONFIG.publishableKey}>
                   <CardPayment
+                    ref={cardPaymentRef}
                     amount={Math.round((draftOrder.data.total || 0) * 100)}
                     currency={draftOrder.data.region?.currency_code || settings.data?.region?.currency_code || 'usd'}
                     onPaymentSuccess={handleCardPaymentSuccess}
-                    onCancel={() => setPaymentMethod('cash')}
+                    onStatusChange={handleCardStatusChange}
+                    // Back out of the payment step (the operator must explicitly
+                    // pick Cash from the selector above to switch methods).
+                    onCancel={() => setCurrentStep('details')}
                   />
                 </StripeProvider>
               )}
             </ScrollView>
 
-            {/* Only show complete order button for cash */}
-            {paymentMethod === 'cash' && (
-              <View className="pb-safe flex-row gap-2">
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onPress={() => setCurrentStep('details')}
-                  disabled={completeOrder.isPending}
-                >
-                  Back
-                </Button>
+            {/* Unified footer: both cash and card share a Back button plus a
+                primary action pinned to the bottom of the screen. */}
+            <View className="pb-safe flex-row gap-2">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onPress={() => setCurrentStep('details')}
+                disabled={completeOrder.isPending || cardBusy}
+              >
+                Back
+              </Button>
+
+              {paymentMethod === 'cash' && (
                 <Button
                   className="flex-1"
                   onPress={handleCashPayment}
@@ -350,8 +373,21 @@ export default function CheckoutScreen() {
                 >
                   Complete Order
                 </Button>
-              </View>
-            )}
+              )}
+
+              {paymentMethod === 'card' && (
+                // Always rendered so the action is visible; disabled until a
+                // reader is connected and ready to charge.
+                <Button
+                  className="flex-1"
+                  onPress={() => cardPaymentRef.current?.charge()}
+                  disabled={!isDraftOrder || completeOrder.isPending || !cardCanCharge}
+                  isPending={completeOrder.isPending}
+                >
+                  Charge Card
+                </Button>
+              )}
+            </View>
           </>
         )}
       </Layout>

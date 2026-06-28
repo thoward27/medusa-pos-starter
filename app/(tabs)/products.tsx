@@ -7,11 +7,13 @@ import { useSettings } from '@/contexts/settings';
 import { useBreakpointValue } from '@/hooks/useBreakpointValue';
 import { clx } from '@/utils/clx';
 import { showErrorToast } from '@/utils/errors';
+import { stableCacheKey } from '@/utils/images';
 import { AdminProduct } from '@medusajs/types';
 import { FlashList, ListRenderItemInfo } from '@shopify/flash-list';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import * as React from 'react';
-import { Image, TouchableOpacity, View } from 'react-native';
+import { TouchableOpacity, View } from 'react-native';
 
 const isPlaceholderProduct = (
   product: AdminProduct | { id: `placeholder_${string}` },
@@ -84,7 +86,15 @@ export default function ProductsScreen() {
               className="aspect-square overflow-hidden rounded-lg bg-gray-200"
               testID={`product-handle_${item.handle}_image`}
             >
-              {thumbnail && <Image source={{ uri: thumbnail }} className="h-full w-full object-cover" />}
+              {thumbnail && (
+                <Image
+                  source={{ uri: thumbnail, cacheKey: stableCacheKey(thumbnail) }}
+                  cachePolicy="memory-disk"
+                  recyclingKey={item.id}
+                  contentFit="cover"
+                  style={{ width: '100%', height: '100%' }}
+                />
+              )}
             </View>
             <View>
               <Text className="mb-1 font-light">{item.title}</Text>

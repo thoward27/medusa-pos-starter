@@ -32,14 +32,16 @@ import { Prompt } from '@/components/ui/Prompt';
 import { QuantityPicker } from '@/components/ui/QuantityPicker';
 import { Text } from '@/components/ui/Text';
 import { clx } from '@/utils/clx';
+import { stableCacheKey } from '@/utils/images';
 import { useSettings } from '@/contexts/settings';
 import { AdminDraftOrder, AdminOrderLineItem, AdminPromotion } from '@medusajs/types';
 import type { FlashListRef } from '@shopify/flash-list';
 import { FlashList, ListRenderItem } from '@shopify/flash-list';
 import { useIsMutating } from '@tanstack/react-query';
+import { Image } from 'expo-image';
 import { router } from 'expo-router';
 import * as React from 'react';
-import { Image, Pressable, TextInput, TouchableOpacity, View } from 'react-native';
+import { Pressable, TextInput, TouchableOpacity, View } from 'react-native';
 import Animated, { SequencedTransition, SlideOutLeft } from 'react-native-reanimated';
 import { useSafeAreaFrame } from 'react-native-safe-area-context';
 import * as z from 'zod/v4';
@@ -128,7 +130,15 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
       >
         <View className="flex-row gap-4 bg-white py-6">
           <View className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-xl bg-gray-200">
-            {thumbnail && <Image source={{ uri: thumbnail }} className="h-full w-full object-cover" />}
+            {thumbnail && (
+              <Image
+                source={{ uri: thumbnail, cacheKey: stableCacheKey(thumbnail) }}
+                cachePolicy="memory-disk"
+                recyclingKey={item.id}
+                contentFit="cover"
+                style={{ width: '100%', height: '100%' }}
+              />
+            )}
           </View>
           <View className="flex-1 flex-col gap-2">
             <Text>{item.product_title}</Text>

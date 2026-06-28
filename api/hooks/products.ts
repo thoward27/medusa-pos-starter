@@ -46,6 +46,10 @@ export const useProducts = (
       const prevPage = (firstPage.offset + firstPage.limit) / limit - 1;
       return prevPage >= 1 ? prevPage : undefined;
     },
+    // Keep the list fresh so newly added products (and replaced image URLs, since
+    // S3 URLs change per version) surface within ~5 min. Image bytes stay durably
+    // cached by expo-image — freshness lives here in the data layer, not the cache.
+    staleTime: 5 * 60 * 1000,
     ...options,
   });
 };

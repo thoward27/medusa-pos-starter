@@ -7,10 +7,12 @@ import { Button } from '@/components/ui/Button';
 import { FulfillmentStatus, OrderStatus, PaymentStatus } from '@/components/ui/OrderStatus';
 import { Text } from '@/components/ui/Text';
 import { useSettings } from '@/contexts/settings';
+import { stableCacheKey } from '@/utils/images';
 import { AdminOrder, AdminOrderLineItem } from '@medusajs/types';
+import { Image } from 'expo-image';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import React from 'react';
-import { FlatList, Image, TouchableOpacity, View } from 'react-native';
+import { FlatList, TouchableOpacity, View } from 'react-native';
 
 const CustomerInformation: React.FC<{
   order: AdminOrder;
@@ -346,7 +348,15 @@ const OrderDetails: React.FC<{ animateOut: (callback?: () => void) => void }> = 
       return (
         <TouchableOpacity className="flex-row gap-4" onPress={() => handleProductPress(item)}>
           <View className="aspect-square h-16 overflow-hidden rounded-lg bg-gray-300">
-            {thumbnail && <Image source={{ uri: thumbnail }} className="h-full w-full object-cover" />}
+            {thumbnail && (
+              <Image
+                source={{ uri: thumbnail, cacheKey: stableCacheKey(thumbnail) }}
+                cachePolicy="memory-disk"
+                recyclingKey={item.id}
+                contentFit="cover"
+                style={{ width: '100%', height: '100%' }}
+              />
+            )}
           </View>
           <View>
             <Text>{item.title}</Text>

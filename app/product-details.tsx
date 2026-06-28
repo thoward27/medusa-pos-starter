@@ -7,10 +7,12 @@ import { OptionPicker } from '@/components/ui/OptionPicker';
 import { QuantityPicker } from '@/components/ui/QuantityPicker';
 import { Text } from '@/components/ui/Text';
 import { useSettings } from '@/contexts/settings';
+import { stableCacheKey } from '@/utils/images';
 import { AdminProductImage } from '@medusajs/types';
+import { Image } from 'expo-image';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import * as React from 'react';
-import { Image, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import Carousel, { CarouselRenderItem, ICarouselInstance, Pagination } from 'react-native-reanimated-carousel';
 import { useSafeAreaFrame } from 'react-native-safe-area-context';
@@ -26,7 +28,15 @@ const ProductImagesCarousel: React.FC<{ images: AdminProductImage[] }> = ({ imag
   const height = Math.round(width * 0.75);
 
   const renderItem = React.useCallback<CarouselRenderItem<AdminProductImage>>(({ item }) => {
-    return <Image source={{ uri: item.url }} className="h-full w-full object-cover" />;
+    return (
+      <Image
+        source={{ uri: item.url, cacheKey: stableCacheKey(item.url) }}
+        cachePolicy="memory-disk"
+        recyclingKey={item.id}
+        contentFit="cover"
+        style={{ width: '100%', height: '100%' }}
+      />
+    );
   }, []);
 
   const onPressPagination = React.useCallback(
