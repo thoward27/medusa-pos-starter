@@ -5,8 +5,18 @@ import { Smartphone } from '@/components/icons/smartphone';
 import { Bluetooth } from '@/components/icons/bluetooth';
 import { Battery, BatteryLow, BatteryMedium, BatteryFull } from '@/components/icons/battery';
 import { X } from '@/components/icons/x';
-import React, { useEffect, useState, useCallback } from 'react';
-import { ActivityIndicator, View, Alert, Platform, TouchableOpacity, ScrollView, Modal, Pressable } from 'react-native';
+import React, { useEffect, useState, useCallback, useRef, useImperativeHandle, forwardRef } from 'react';
+import {
+  ActivityIndicator,
+  View,
+  Alert,
+  Platform,
+  TouchableOpacity,
+  ScrollView,
+  Modal,
+  Pressable,
+  useWindowDimensions,
+} from 'react-native';
 import Constants from 'expo-constants';
 import { useStripeTerminal, Reader } from '@stripe/stripe-terminal-react-native';
 
@@ -15,7 +25,13 @@ interface CardPaymentProps {
   currency: string;
   onPaymentSuccess: (paymentIntentId: string) => void;
   onCancel: () => void;
+  // Reports charge readiness / busy state so the screen can render the action
+  // button in its bottom footer (mirroring the cash checkout layout).
+  onStatusChange?: (status: { canCharge: boolean; busy: boolean }) => void;
 }
+
+// Imperative handle so the screen's footer button can trigger the charge.
+export type CardPaymentHandle = { charge: () => void };
 
 type PaymentStatus = 'initializing' | 'noReader' | 'readyToCharge' | 'collecting' | 'processing' | 'success' | 'error';
 
@@ -24,6 +40,17 @@ type ReaderStatus = 'idle' | 'discovering_bluetooth' | 'discovering_tap_to_pay' 
 // Check if we're running in Expo Go (which doesn't support native modules)
 const isExpoGo = Constants.appOwnership === 'expo';
 const STRIPE_TERMINAL_AVAILABLE = !isExpoGo && Platform.OS !== 'web';
+
+// The Stripe Terminal SDK only allows ONE discovery method to be active at a
+// time, and discoverReaders() does not resolve until that discovery is
+// cancelled. To surface both Tap to Pay and Bluetooth readers we cycle between
+// the two methods, giving each a scan window before switching. Tap to Pay
+// resolves to the local reader almost instantly; Bluetooth needs longer to find
+// nearby hardware.
+const TAP_TO_PAY_SCAN_MS = 3000;
+const BLUETOOTH_SCAN_MS = 8000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Validate environment variables
 const STRIPE_LOCATION_ID = process.env.EXPO_PUBLIC_STRIPE_LOCATION_ID;
@@ -166,16 +193,64 @@ const ReaderSelectionModal: React.FC<{
   onSelectReader: (reader: Reader.Type) => void;
   selectedReader: Reader.Type | null;
 }> = ({ visible, onClose, readerStatus, discoveredReaders, onSelectReader, selectedReader }) => {
-  console.log('ReaderSelectionModal', {
-    visible,
-    readerStatus,
-    selectedReader,
-  });
+  const { height: windowHeight } = useWindowDimensions();
+
+  // Derive a single always-present banner so the header never appears/disappears
+  // or changes size as discovery cycles between methods. Only the text/colour
+  // inside the fixed-size container changes — never the layout.
+  const banner = (() => {
+    const count = discoveredReaders.length;
+    const suffix = count > 0 ? ` · ${count} found` : '';
+    switch (readerStatus) {
+      case 'connecting': {
+        const name = selectedReader?.label || (selectedReader?.deviceType === 'tapToPay' ? 'Tap to Pay' : 'reader');
+        return {
+          tone: 'bg-green-50',
+          spinnerColor: '#16a34a',
+          textClass: 'text-green-700',
+          text: `Connecting to ${name}...`,
+        };
+      }
+      case 'connected':
+        return { tone: 'bg-green-50', spinnerColor: '#16a34a', textClass: 'text-green-700', text: 'Reader connected.' };
+      case 'discovering_bluetooth':
+        return {
+          tone: 'bg-blue-50',
+          spinnerColor: '#3b82f6',
+          textClass: 'text-blue-700',
+          text: `Discovering Bluetooth readers...${suffix}`,
+        };
+      case 'discovering_tap_to_pay':
+        return {
+          tone: 'bg-blue-50',
+          spinnerColor: '#3b82f6',
+          textClass: 'text-blue-700',
+          text: `Discovering Tap to Pay...${suffix}`,
+        };
+      default:
+        return {
+          tone: 'bg-blue-50',
+          spinnerColor: '#3b82f6',
+          textClass: 'text-blue-700',
+          text: `Searching for readers...${suffix}`,
+        };
+    }
+  })();
+
+  const showSpinner = readerStatus !== 'connected';
+
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <Pressable className="flex-1 bg-black/50" onPress={onClose}>
         <View className="flex-1 items-center justify-center p-4">
-          <Pressable className="w-full max-w-md rounded-2xl bg-white p-6" onPress={(e) => e.stopPropagation()}>
+          {/* Fixed-height card: header, banner and footer stay put while the
+              middle list region absorbs newly discovered readers without
+              resizing the modal (which would re-centre it and move targets). */}
+          <Pressable
+            className="w-full max-w-md flex-col rounded-2xl bg-white p-6"
+            style={{ height: windowHeight * 0.7 }}
+            onPress={(e) => e.stopPropagation()}
+          >
             {/* Header */}
             <View className="mb-4 flex-row items-center justify-between">
               <Text className="text-xl font-semibold">Select Reader</Text>
@@ -187,57 +262,39 @@ const ReaderSelectionModal: React.FC<{
               </TouchableOpacity>
             </View>
 
-            {/* Discovery Status */}
-            <View className="mb-4">
-              {readerStatus === 'discovering_bluetooth' && (
-                <View className="flex-row items-center gap-3 rounded-xl bg-blue-50 p-3">
-                  <ActivityIndicator size="small" color="#3b82f6" />
-                  <Text className="text-sm text-blue-700">Discovering Bluetooth readers...</Text>
-                </View>
+            {/* Discovery Status — fixed-size header, always present */}
+            <View className={`mb-4 h-12 flex-row items-center gap-3 rounded-xl px-3 ${banner.tone}`}>
+              {showSpinner ? (
+                <ActivityIndicator size="small" color={banner.spinnerColor} />
+              ) : (
+                <Text className="text-base">✓</Text>
               )}
-              {readerStatus === 'discovering_tap_to_pay' && (
-                <View className="flex-row items-center gap-3 rounded-xl bg-blue-50 p-3">
-                  <ActivityIndicator size="small" color="#3b82f6" />
-                  <Text className="text-sm text-blue-700">Discovering Tap to Pay...</Text>
-                </View>
-              )}
-              {readerStatus === 'connecting' && selectedReader && (
-                <View className="flex-row items-center gap-3 rounded-xl bg-green-50 p-3">
-                  <ActivityIndicator size="small" color="#16a34a" />
-                  <Text className="text-sm text-green-700">
-                    Connecting to{' '}
-                    {selectedReader.label || (selectedReader.deviceType === 'tapToPay' ? 'Tap to Pay' : 'reader')}...
-                  </Text>
-                </View>
-              )}
-              {readerStatus === 'connecting' && !selectedReader && (
-                <View className="flex-row items-center gap-3 rounded-xl bg-green-50 p-3">
-                  <ActivityIndicator size="small" color="#16a34a" />
-                  <Text className="text-sm text-green-700">Connecting to reader...</Text>
-                </View>
-              )}
-              {readerStatus === 'connected' && discoveredReaders.length === 0 && (
-                <View className="rounded-xl bg-yellow-50 p-3">
-                  <Text className="text-sm text-yellow-700">
-                    No readers found. Please ensure your reader is powered on and nearby.
-                  </Text>
-                </View>
-              )}
+              <Text className={`flex-1 text-sm ${banner.textClass}`} numberOfLines={1}>
+                {banner.text}
+              </Text>
             </View>
 
-            {/* Readers List */}
-            <ScrollView className="max-h-96" showsVerticalScrollIndicator={false}>
-              <View className="gap-3">
-                {discoveredReaders.map((reader) => (
-                  <ReaderListItem
-                    key={reader.serialNumber}
-                    reader={reader}
-                    onSelect={() => {
-                      onSelectReader(reader);
-                    }}
-                  />
-                ))}
-              </View>
+            {/* Readers List — fills the remaining fixed space. New readers are
+                appended to the bottom; we never auto-scroll, so already-visible
+                cards keep their position. */}
+            <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+              {discoveredReaders.length === 0 ? (
+                <View className="flex-1 items-center justify-center py-8">
+                  <Text className="text-sm text-gray-400">Looking for nearby readers...</Text>
+                </View>
+              ) : (
+                <View className="gap-3">
+                  {discoveredReaders.map((reader) => (
+                    <ReaderListItem
+                      key={reader.serialNumber}
+                      reader={reader}
+                      onSelect={() => {
+                        onSelectReader(reader);
+                      }}
+                    />
+                  ))}
+                </View>
+              )}
             </ScrollView>
 
             {/* Close Button */}
@@ -253,7 +310,10 @@ const ReaderSelectionModal: React.FC<{
   );
 };
 
-const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPaymentSuccess, onCancel }) => {
+const CardPaymentNative = forwardRef<CardPaymentHandle, CardPaymentProps>(function CardPaymentNative(
+  { amount, currency, onPaymentSuccess, onCancel, onStatusChange },
+  ref,
+) {
   const [showReaderModal, setShowReaderModal] = useState(false);
 
   const [readerStatus, setReaderStatus] = useState<ReaderStatus>('idle');
@@ -273,6 +333,21 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
   // Track if we're in the process of connecting
   const [isConnecting, setIsConnecting] = useState(false);
 
+  // Whether the cycling discovery loop is currently running.
+  const discoveryLoopRef = useRef(false);
+  // Mirrors of state the discovery loop reads, kept in sync via the effects
+  // below so the long-lived loop always sees the latest values.
+  const selectedReaderRef = useRef<Reader.Type | null>(null);
+  const currentReadersRef = useRef<Reader.Type[]>([]);
+
+  useEffect(() => {
+    selectedReaderRef.current = selectedReader;
+  }, [selectedReader]);
+
+  useEffect(() => {
+    currentReadersRef.current = currentReaders;
+  }, [currentReaders]);
+
   const {
     discoverReaders,
     connectReader,
@@ -288,10 +363,21 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
       console.log('Discovered readers:', readers);
       setCurrentReaders([...readers]);
       setDiscoveredReaders((prev) => {
-        // Merge new readers with existing ones, avoiding duplicates
-        const existing = prev.filter((p) => !readers.find((r) => r.serialNumber === p.serialNumber));
-        const merged = [...existing, ...(readers || [])];
-        return merged;
+        // Stable merge: keep already-listed readers in their original position
+        // (updated in place so fields like battery refresh) and only APPEND
+        // genuinely new readers. This avoids reordering the list — and therefore
+        // moving click targets — when a reader is re-reported across discovery
+        // cycles.
+        const next = [...prev];
+        for (const reader of readers || []) {
+          const idx = next.findIndex((p) => p.serialNumber === reader.serialNumber);
+          if (idx === -1) {
+            next.push(reader);
+          } else {
+            next[idx] = reader;
+          }
+        }
+        return next;
       });
     },
     onDidChangeConnectionStatus: (status: Reader.ConnectionStatus) => {
@@ -299,6 +385,8 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
         setIsConnecting(true);
         setReaderStatus('connecting');
       } else if (status === 'connected') {
+        // Stop the cycling discovery loop now that we have a reader.
+        discoveryLoopRef.current = false;
         setReaderStatus('connected');
         setPaymentStatus('readyToCharge');
         setReaderMessage('Reader connected. Ready to charge.');
@@ -379,75 +467,116 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
     initializeSDK();
 
     return () => {
-      // Cleanup - cancel any ongoing collection
+      // Cleanup - stop discovery and cancel any ongoing collection
+      discoveryLoopRef.current = false;
+      cancelDiscovering().catch(() => {});
       cancelCollectPaymentMethod().catch(console.error);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once on mount
 
-  // Discover Tap to Pay readers
-  const discoverTapToPay = useCallback(async () => {
-    await cancelDiscovering();
-    setReaderStatus('discovering_tap_to_pay');
-    setCurrentReaders([]);
-    await discoverReaders({
-      discoveryMethod: 'tapToPay',
-      simulated: __DEV__,
-      timeout: 60,
-    }).then(({ error }) => {
-      if (error) {
-        console.warn('Tap to Pay discovery error:', error);
-      }
-    });
-  }, [discoverReaders, cancelDiscovering]);
+  // Stop the cycling discovery loop and cancel any active discovery.
+  const stopDiscovery = useCallback(async () => {
+    discoveryLoopRef.current = false;
+    await cancelDiscovering().catch(() => {});
+  }, [cancelDiscovering]);
 
-  // Discover Bluetooth readers
-  const discoverBluetooth = useCallback(async () => {
-    await cancelDiscovering();
-    setReaderStatus('discovering_bluetooth');
-    setCurrentReaders([]);
-    await discoverReaders({
-      discoveryMethod: 'bluetoothScan',
-      simulated: false,
-      timeout: 60,
-    }).then(({ error }) => {
-      if (error) {
-        console.warn('Bluetooth discovery error:', error);
-      }
-    });
-  }, [discoverReaders, cancelDiscovering]);
-
-  // Discover all readers when modal opens
+  // Continuously discover readers until the user selects one (or the loop is
+  // stopped). The Stripe SDK only allows one discovery method at a time and
+  // discoverReaders() doesn't resolve until discovery is cancelled, so we can't
+  // run both methods in parallel or await them sequentially. Instead we start a
+  // method, let it scan for a window, cancel it, and switch to the other —
+  // accumulating results into `discoveredReaders` the whole time. Once a reader
+  // is selected we lock onto its method so the auto-connect effect can connect.
   const startDiscovery = useCallback(async () => {
+    if (discoveryLoopRef.current) return;
+    discoveryLoopRef.current = true;
+    setDiscoveredReaders([]);
+
+    // Fire-and-forget a discovery method. `discoverReaders` resolves only when
+    // discovery is cancelled, so we don't await its completion here.
+    const beginDiscovery = async (method: 'tapToPay' | 'bluetoothScan') => {
+      await cancelDiscovering().catch(() => {});
+      // Bail if the loop was stopped or a reader was selected while cancelling.
+      if (!discoveryLoopRef.current) return;
+      setCurrentReaders([]);
+      discoverReaders({
+        discoveryMethod: method,
+        simulated: method === 'tapToPay' ? __DEV__ : false,
+        // 0 = scan continuously; we drive cancellation ourselves.
+        ...(method === 'bluetoothScan' ? { timeout: 0 } : {}),
+      }).then(({ error }) => {
+        if (error) {
+          console.warn(`${method} discovery error:`, error);
+        }
+      });
+    };
+
+    // Sleep in small steps so the loop reacts quickly to a selection or stop.
+    const waitWhileScanning = async (ms: number) => {
+      const step = 250;
+      for (let elapsed = 0; elapsed < ms; elapsed += step) {
+        if (!discoveryLoopRef.current || selectedReaderRef.current) return;
+        await sleep(step);
+      }
+    };
+
     try {
-      await cancelDiscovering();
-      setDiscoveredReaders([]);
-      await discoverTapToPay();
-      await discoverBluetooth();
-      setReaderStatus('idle');
+      while (discoveryLoopRef.current) {
+        const selected = selectedReaderRef.current;
+
+        if (selected) {
+          // Lock onto the selected reader's method so it stays connectable, and
+          // let the auto-connect effect take over. The connection-status handler
+          // stops the loop once connected; a failed connection clears the
+          // selection so we resume cycling.
+          const method = selected.deviceType === 'tapToPay' ? 'tapToPay' : 'bluetoothScan';
+          setReaderStatus('connecting');
+          const alreadyConnectable = currentReadersRef.current.some((r) => r.serialNumber === selected.serialNumber);
+          // Avoid disrupting an in-progress connection: only (re)discover if the
+          // reader isn't already in the active discovery results.
+          if (!alreadyConnectable) {
+            await beginDiscovery(method);
+          }
+          while (discoveryLoopRef.current && selectedReaderRef.current) {
+            await sleep(250);
+          }
+        } else {
+          // Cycle between methods so every reader type is discovered.
+          setReaderStatus('discovering_tap_to_pay');
+          await beginDiscovery('tapToPay');
+          await waitWhileScanning(TAP_TO_PAY_SCAN_MS);
+          if (!discoveryLoopRef.current || selectedReaderRef.current) continue;
+
+          setReaderStatus('discovering_bluetooth');
+          await beginDiscovery('bluetoothScan');
+          await waitWhileScanning(BLUETOOTH_SCAN_MS);
+        }
+      }
     } catch (error: any) {
       console.error('Discovery error:', error);
-      setReaderStatus('idle');
       Alert.alert('Discovery Error', error?.message || 'Failed to discover readers');
+    } finally {
+      await cancelDiscovering().catch(() => {});
+      discoveryLoopRef.current = false;
     }
-  }, [cancelDiscovering, discoverTapToPay, discoverBluetooth]);
+  }, [cancelDiscovering, discoverReaders]);
 
-  // Handle reader selection - simple state setter, no useCallback needed
-  const handleSelectReader = (reader: Reader.Type) => {
-    console.log('User selected reader:', reader);
-    setReaderStatus('connecting');
-    setSelectedReader(reader);
-
-    // If reader not in current results, trigger rediscovery
-    if (!currentReaders.some((r) => r.serialNumber === reader.serialNumber)) {
-      const discoveryMethod = reader.deviceType === 'tapToPay' ? 'tapToPay' : 'bluetoothScan';
-      if (discoveryMethod === 'tapToPay') {
-        discoverTapToPay();
-      } else {
-        discoverBluetooth();
+  // Handle reader selection. The discovery loop owns all discovery, so we just
+  // record the selection (and restart the loop if it isn't running); the loop
+  // locks onto the reader's method and the auto-connect effect connects.
+  const handleSelectReader = useCallback(
+    (reader: Reader.Type) => {
+      console.log('User selected reader:', reader);
+      setReaderStatus('connecting');
+      setSelectedReader(reader);
+      selectedReaderRef.current = reader;
+      if (!discoveryLoopRef.current) {
+        startDiscovery();
       }
-    }
-  };
+    },
+    [startDiscovery],
+  );
 
   // Auto-connect when selectedReader appears in currentReaders
   useEffect(() => {
@@ -486,6 +615,10 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
       })
       .catch((error: any) => {
         console.error('Auto-connect error:', error);
+        // Clear the selection so the discovery loop resumes cycling and the
+        // user can pick another reader.
+        setSelectedReader(null);
+        selectedReaderRef.current = null;
         setReaderStatus('idle');
         Alert.alert('Connection Error', error?.message || 'Failed to connect to reader');
       })
@@ -614,18 +747,16 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
     onCancel,
   ]);
 
-  // Handle cancel - needs useCallback (passed to Button and Alert)
-  const handleCancel = useCallback(async () => {
-    try {
-      if (paymentStatus === 'collecting') {
-        await cancelCollectPaymentMethod();
-      }
-      onCancel();
-    } catch (error) {
-      console.error('Cancel error:', error);
-      onCancel();
-    }
-  }, [paymentStatus, cancelCollectPaymentMethod, onCancel]);
+  // Expose the charge action so the screen footer can trigger it.
+  useImperativeHandle(ref, () => ({ charge: handleCharge }), [handleCharge]);
+
+  // Report charge readiness / busy state up to the screen so it can render the
+  // primary action button in its bottom footer (like the cash flow).
+  useEffect(() => {
+    const canCharge = paymentStatus === 'readyToCharge' && !!connectedReader;
+    const busy = paymentStatus === 'collecting' || paymentStatus === 'processing' || paymentStatus === 'success';
+    onStatusChange?.({ canCharge, busy });
+  }, [paymentStatus, connectedReader, onStatusChange]);
 
   // Render loading state
   if (paymentStatus === 'initializing') {
@@ -652,9 +783,6 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
             <Text className="text-center text-gray-400">{readerMessage}</Text>
           </View>
         </View>
-        <Button variant="outline" onPress={onCancel}>
-          Cancel
-        </Button>
       </View>
     );
   }
@@ -686,14 +814,6 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
             <Text className="text-center font-semibold text-red-600">Error</Text>
             <Text className="text-center text-sm text-gray-400">{errorMessage}</Text>
           </View>
-        </View>
-        <View className="flex-row gap-2">
-          <Button variant="outline" className="flex-1" onPress={onCancel}>
-            Cancel
-          </Button>
-          <Button className="flex-1" onPress={() => window.location.reload()}>
-            Retry
-          </Button>
         </View>
       </View>
     );
@@ -749,30 +869,13 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
         )}
       </View>
 
-      {/* Action Buttons */}
-      <View className="pb-safe flex-row gap-2">
-        <Button
-          variant="outline"
-          className="flex-1"
-          onPress={handleCancel}
-          disabled={paymentStatus === 'processing' || paymentStatus === 'success'}
-        >
-          Cancel
-        </Button>
-
-        {paymentStatus === 'readyToCharge' && connectedReader && (
-          <Button className="flex-1" onPress={handleCharge}>
-            Charge Card
-          </Button>
-        )}
-      </View>
-
       {/* Reader Selection Modal */}
       <ReaderSelectionModal
         visible={showReaderModal}
         onClose={async () => {
-          await cancelDiscovering();
+          await stopDiscovery();
           setSelectedReader(null);
+          selectedReaderRef.current = null;
           setShowReaderModal(false);
           setReaderStatus('idle');
         }}
@@ -783,9 +886,9 @@ const CardPaymentNative: React.FC<CardPaymentProps> = ({ amount, currency, onPay
       />
     </View>
   );
-};
+});
 
-const CardPaymentUnsupported: React.FC<CardPaymentProps> = ({ onCancel }) => {
+const CardPaymentUnsupported: React.FC = () => {
   let errorMessage = 'Card payment is not supported in this environment.';
 
   if (Platform.OS === 'web') {
@@ -794,24 +897,20 @@ const CardPaymentUnsupported: React.FC<CardPaymentProps> = ({ onCancel }) => {
     errorMessage = 'Card payment requires a development build. It cannot be used in Expo Go.';
   }
 
+  // The screen's footer provides the Back button (mirroring the cash flow).
   return (
-    <View className="flex-1">
-      <View className="mb-6 items-center rounded-xl bg-gray-50 p-6">
-        <CreditCard size={48} className="mb-4 text-gray-300" />
-        <Text className="mb-2 text-center text-xl font-semibold">Not Available</Text>
-        <Text className="text-center text-gray-400">{errorMessage}</Text>
-      </View>
-      <Button variant="outline" onPress={onCancel}>
-        Back
-      </Button>
+    <View className="items-center rounded-xl bg-gray-50 p-6">
+      <CreditCard size={48} className="mb-4 text-gray-300" />
+      <Text className="mb-2 text-center text-xl font-semibold">Not Available</Text>
+      <Text className="text-center text-gray-400">{errorMessage}</Text>
     </View>
   );
 };
 
-export const CardPayment: React.FC<CardPaymentProps> = (props) => {
+export const CardPayment = forwardRef<CardPaymentHandle, CardPaymentProps>(function CardPayment(props, ref) {
   if (!STRIPE_TERMINAL_AVAILABLE || Platform.OS === 'web' || isExpoGo) {
-    return <CardPaymentUnsupported {...props} />;
+    return <CardPaymentUnsupported />;
   }
 
-  return <CardPaymentNative {...props} />;
-};
+  return <CardPaymentNative {...props} ref={ref} />;
+});
