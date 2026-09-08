@@ -19,6 +19,7 @@ import {
 } from 'react-native';
 import Constants from 'expo-constants';
 import { useStripeTerminal, Reader } from '@stripe/stripe-terminal-react-native';
+import { useStripeTerminalContext } from '@/contexts/stripe-terminal';
 
 interface CardPaymentProps {
   amount: number;
@@ -314,6 +315,8 @@ const CardPaymentNative = forwardRef<CardPaymentHandle, CardPaymentProps>(functi
   { amount, currency, onPaymentSuccess, onCancel, onStatusChange },
   ref,
 ) {
+  const { initStatus, initError, retryInitialize } = useStripeTerminalContext();
+
   const [showReaderModal, setShowReaderModal] = useState(false);
 
   const [readerStatus, setReaderStatus] = useState<ReaderStatus>('idle');
@@ -349,6 +352,7 @@ const CardPaymentNative = forwardRef<CardPaymentHandle, CardPaymentProps>(functi
   }, [currentReaders]);
 
   const {
+    isInitialized,
     discoverReaders,
     connectReader,
     disconnectReader,
@@ -439,14 +443,35 @@ const CardPaymentNative = forwardRef<CardPaymentHandle, CardPaymentProps>(functi
     },
   });
 
-  // Initialize SDK - runs once on mount
+  // Check for an already-connected reader — but only once the Stripe Terminal
+  // SDK reports initialized. The SDK is initialized once at app root
+  // (StripeTerminalInitializer); every SDK method (incl. getConnectedReader)
+  // throws "First initialize the Stripe Terminal SDK before performing any
+  // action" until that completes. Init is async (token fetch + native setup),
+  // and on Android it's slow enough that this component mounts first, so we must
+  // wait for `isInitialized` rather than calling on mount. Re-runs when the flag
+  // flips true.
   useEffect(() => {
-    const initializeSDK = async () => {
+    // App-level initialization failed (e.g. Android location permission denied
+    // or the connection-token fetch errored). Surface it with a retry rather
+    // than spinning on "initializing" forever.
+    if (initStatus === 'error') {
+      setPaymentStatus('error');
+      setErrorMessage(initError || 'Failed to initialize payment system');
+      return;
+    }
+
+    if (!isInitialized) {
+      setPaymentStatus('initializing');
+      setReaderMessage('Initializing payment system...');
+      return;
+    }
+
+    let cancelled = false;
+    const checkConnectedReader = async () => {
       try {
-        setPaymentStatus('initializing');
-        setReaderMessage('Initializing payment system...');
-        // Check if already connected
         const reader = await getConnectedReader();
+        if (cancelled) return;
         // iOS returns empty object {} instead of null when no reader connected
         // Validate reader has actual data (serialNumber is required field)
         if (reader && reader.serialNumber) {
@@ -458,22 +483,29 @@ const CardPaymentNative = forwardRef<CardPaymentHandle, CardPaymentProps>(functi
           setPaymentStatus('noReader');
         }
       } catch (error: any) {
+        if (cancelled) return;
         console.error('Initialization error:', error);
         setPaymentStatus('error');
         setErrorMessage(error?.message || 'Failed to initialize payment system');
       }
     };
 
-    initializeSDK();
+    checkConnectedReader();
 
     return () => {
-      // Cleanup - stop discovery and cancel any ongoing collection
+      cancelled = true;
+    };
+  }, [isInitialized, initStatus, initError, getConnectedReader]);
+
+  // Cleanup on unmount - stop discovery and cancel any ongoing collection.
+  useEffect(() => {
+    return () => {
       discoveryLoopRef.current = false;
       cancelDiscovering().catch(() => {});
-      cancelCollectPaymentMethod().catch(console.error);
+      cancelCollectPaymentMethod().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only run once on mount
+  }, []);
 
   // Stop the cycling discovery loop and cancel any active discovery.
   const stopDiscovery = useCallback(async () => {
@@ -813,6 +845,20 @@ const CardPaymentNative = forwardRef<CardPaymentHandle, CardPaymentProps>(functi
             </View>
             <Text className="text-center font-semibold text-red-600">Error</Text>
             <Text className="text-center text-sm text-gray-400">{errorMessage}</Text>
+            {/* Init-phase failures (permission denied / token fetch failed) are
+                recoverable: let the operator re-run initialization. */}
+            {!isInitialized && (
+              <Button
+                className="mt-2"
+                onPress={() => {
+                  setErrorMessage('');
+                  setPaymentStatus('initializing');
+                  retryInitialize();
+                }}
+              >
+                Retry
+              </Button>
+            )}
           </View>
         </View>
       </View>

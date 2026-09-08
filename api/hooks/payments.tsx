@@ -2,6 +2,7 @@ import { useMedusaSdk } from '@/contexts/auth';
 import { useSettings } from '@/contexts/settings';
 import { storage } from '@/utils/storage';
 import { showErrorToast } from '@/utils/errors';
+import { bucketsFromOrder, FULFILLMENT_BUCKETS, getBucket } from '@/utils/fulfillment';
 import { useMutation, UseMutationOptions, useQueryClient } from '@tanstack/react-query';
 import Toast from 'react-native-toast-message';
 
@@ -44,7 +45,7 @@ export const useCompleteOrder = (
         // Step 1: Retrieve the draft order with all necessary fields
         const { draft_order } = await sdk.admin.draftOrder.retrieve(draftOrderId, {
           fields:
-            '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+customer.*,+customer.addresses.*',
+            '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+customer.*,+customer.addresses.*,+metadata',
         });
         if (!draft_order) {
           throw new Error('Draft order not found');
@@ -89,7 +90,7 @@ export const useCompleteOrder = (
         await sdk.admin.draftOrder.confirmEdit(draftOrderId);
 
         // Step 3: Convert draft order to order and mark as paid.
-        let order = await sdk.admin.draftOrder
+        const order = await sdk.admin.draftOrder
           .convertToOrder(draftOrderId, {
             fields: '+id,+payment_collections.*,+items.id,+items.quantity,+items.requires_shipping',
           })
@@ -101,24 +102,39 @@ export const useCompleteOrder = (
             return order;
           });
 
-        // Step 4: Auto-fulfill any line items that don't require shipping (customer is
-        // taking them in person). Items that require shipping are left for the regular
-        // shipping workflow. Medusa rejects mixed-shipping fulfillments, so we must split.
-        const nonShippingItems = order.items.filter((item) => !item.requires_shipping);
-        if (nonShippingItems.length > 0) {
+        // Step 4: Create one fulfillment per operator-selected bucket (from the
+        // cart's fulfillment_buckets metadata), which drives the order's status:
+        //   - now (take now): fulfilled + marked delivered (handed over in person)
+        //   - pickup:         fulfilled, left un-delivered until the customer collects it
+        //   - ship:           left unfulfilled, handled by the shipping workflow later
+        // Grouping by bucket (rather than by requires_shipping) is what was missing:
+        // the old code lumped every non-shipping item into one fulfillment and marked
+        // it delivered, so a "ship" item that wasn't flagged requires_shipping was
+        // wrongly delivered. Buckets already separate in-person from shipped items, so
+        // one fulfillment per bucket also respects Medusa's no-mixed-shipping rule.
+        const itemBuckets = bucketsFromOrder(draft_order.metadata);
+        const resolveBucket = (item: { id: string; requires_shipping?: boolean | null }) =>
+          getBucket(item, [...FULFILLMENT_BUCKETS], itemBuckets);
+
+        const seenFulfillmentIds = new Set<string>((order.fulfillments ?? []).map((f) => f.id));
+
+        // 'ship' is intentionally omitted — those items stay unfulfilled at checkout.
+        for (const bucket of ['now', 'pickup'] as const) {
+          const groupItems = order.items.filter((item) => resolveBucket(item) === bucket);
+          if (groupItems.length === 0) continue;
+
           const { order: fulfilledOrder } = await sdk.admin.order.createFulfillment(
             draftOrderId,
-            {
-              items: nonShippingItems.map((item) => ({
-                id: item.id,
-                quantity: item.quantity,
-              })),
-            },
-            { fields: '+id,+fulfillments.id,+fulfillments.requires_shipping' },
+            { items: groupItems.map((item) => ({ id: item.id, quantity: item.quantity })) },
+            { fields: '+id,+fulfillments.id' },
           );
-          const newFulfillment = fulfilledOrder.fulfillments?.find((f) => !f.requires_shipping);
+
+          const newFulfillment = fulfilledOrder.fulfillments?.find((f) => !seenFulfillmentIds.has(f.id));
           if (newFulfillment) {
-            await sdk.admin.order.markAsDelivered(fulfilledOrder.id, newFulfillment.id);
+            seenFulfillmentIds.add(newFulfillment.id);
+            if (bucket === 'now') {
+              await sdk.admin.order.markAsDelivered(fulfilledOrder.id, newFulfillment.id);
+            }
           }
         }
 
