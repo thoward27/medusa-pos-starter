@@ -1,11 +1,13 @@
 import { useMedusaSdk } from '@/contexts/auth';
 import { useSettings } from '@/contexts/settings';
 import { showErrorToast } from '@/utils/errors';
+import { FULFILLMENT_BUCKETS_KEY, FulfillmentBucket } from '@/utils/fulfillment';
 import {
   AdminAddDraftOrderItems,
   AdminCustomer,
   AdminDraftOrderPreviewResponse,
   AdminDraftOrderResponse,
+  AdminOrderLineItem,
   AdminUpdateDraftOrderItem,
 } from '@medusajs/types';
 import { useMutation, UseMutationOptions, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -13,7 +15,35 @@ import * as React from 'react';
 import { storage } from '@/utils/storage';
 
 const DRAFT_ORDER_ID_STORAGE_KEY = 'draft_order_id';
-export const DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL = 'noreply+pos-guest@agilo.com';
+
+/**
+ * The shared walk-in customer every POS order is attached to when no particular
+ * customer is chosen.
+ *
+ * ── Why this moved off agilo.com ─────────────────────────────────────────────
+ *
+ * It used to be `noreply+pos-guest@agilo.com` — an upstream-starter leftover
+ * pointing at a mailbox on a domain this store does not own and cannot receive
+ * mail for. Every anonymous POS sale in the store's history hangs off one
+ * customer record on somebody else's domain.
+ *
+ * Moving it to an owned domain does NOT make it a usable customer, and is not
+ * meant to. It stays a placeholder standing in for "no particular person": the
+ * point is only that the store now owns the address it is stamping on its own
+ * orders, so anything that ever does reach it lands somewhere Tom can see.
+ *
+ * ⚠ Changing this value creates a NEW shared customer record on first use. The
+ * old one keeps every order already attached to it — nothing is migrated, and
+ * nothing should be. Historical orders keep their history.
+ *
+ * ⚠ A commission can NEVER be sold against this record, whatever it is set to.
+ * The backend refuses the whole placeholder family (`noreply`, `guest`,
+ * `pos-guest`, `walk-in`, `pos-customer`…) on any order containing a
+ * commission, because a commission is a named relationship with one buyer and
+ * a shared record is reachable by all of them or none of them. The cart screen
+ * warns about that before payment; see `utils/commissions.ts`.
+ */
+export const DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL = process.env.EXPO_PUBLIC_POS_GUEST_EMAIL || 'pos-guest@taylormade.cc';
 
 const useGetOrSetDefaultCustomer = () => {
   const sdk = useMedusaSdk();
@@ -85,13 +115,13 @@ export const useDraftOrderOrOrder = (draftOrderId: string) => {
       return sdk.admin.draftOrder
         .retrieve(draftOrderId, {
           fields:
-            '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+customer.*,+metadata',
+            '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+items.product_type,+items.product.type.value,+customer.*,+metadata',
         })
         .then((res) => res.draft_order)
         .catch(async () => {
           const res = await sdk.admin.order.retrieve(draftOrderId, {
             fields:
-              '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+customer.*,+metadata',
+              '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.requires_shipping,+items.product_type,+items.product.type.value,+customer.*,+metadata',
           });
           return res.order;
         });
@@ -114,7 +144,7 @@ export const useCurrentDraftOrder = () => {
 
       return sdk.admin.draftOrder.retrieve(draftOrderId, {
         fields:
-          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.compare_at_unit_price,+items.unit_price,+items.requires_shipping,+items.product.variants.id,+items.product.variants.title,+items.product.variants.requires_shipping,+customer.*,+metadata',
+          '+tax_total,+discount_total,+subtotal,+total,+items.variant.options.*,+items.variant.options.option.*,+items.variant.inventory_quantity,+items.compare_at_unit_price,+items.unit_price,+items.requires_shipping,+items.product.variants.id,+items.product.variants.title,+items.product.variants.requires_shipping,+items.product.tags.value,+items.metadata,+items.product_type,+items.product.type.value,+customer.*,+metadata',
       });
     },
   });
@@ -490,6 +520,115 @@ interface UpdateDraftOrderNoteParams {
   note: string;
   existingMetadata?: Record<string, unknown> | null;
 }
+
+// Duplicates a line item as a separate line (same variant, quantity 1), so the
+// operator can split a product across fulfillment buckets and adjust quantities.
+export const useDuplicateLineItem = (
+  options?: Omit<
+    UseMutationOptions<AdminDraftOrderPreviewResponse, Error, AdminOrderLineItem, unknown>,
+    'mutationKey' | 'mutationFn'
+  >,
+) => {
+  const sdk = useMedusaSdk();
+  const queryClient = useQueryClient();
+  const getOrSetDraftOrderId = useGetOrSetDraftOrderId();
+
+  return useMutation({
+    mutationKey: ['draft-order', 'items', 'duplicate'],
+    mutationFn: async (item) => {
+      const draftOrderId = await getOrSetDraftOrderId();
+      const newItem = item.variant_id
+        ? {
+            variant_id: item.variant_id,
+            quantity: 1,
+            unit_price: item.unit_price,
+            compare_at_unit_price: item.compare_at_unit_price,
+          }
+        : {
+            title: item.title ?? item.product_title ?? 'Item',
+            quantity: 1,
+            unit_price: item.unit_price,
+            compare_at_unit_price: item.compare_at_unit_price,
+          };
+
+      await sdk.admin.draftOrder.beginEdit(draftOrderId);
+      try {
+        await sdk.admin.draftOrder.addItems(draftOrderId, { items: [newItem] });
+        return await sdk.admin.draftOrder.confirmEdit(draftOrderId);
+      } catch (error) {
+        await sdk.admin.draftOrder.cancelEdit(draftOrderId);
+        throw error;
+      }
+    },
+    ...options,
+    onSettled: async (...args) => {
+      if (queryClient.isMutating({ mutationKey: ['draft-order'], exact: false }) === 1) {
+        await queryClient.invalidateQueries({ queryKey: ['draft-order'], exact: false });
+      }
+      return options?.onSettled?.(...args);
+    },
+    onError(error, variables, context) {
+      showErrorToast(error);
+      return options?.onError?.(error, variables, context);
+    },
+  });
+};
+
+// Sets a line item's fulfillment bucket (now/pickup/ship). Stored in the draft
+// order's metadata as an { [lineItemId]: bucket } map and written via the
+// order-level update() path (line-item metadata can't be changed on its own
+// through the draft-order edit flow).
+export const useSetLineItemBucket = (
+  options?: Omit<
+    UseMutationOptions<
+      AdminDraftOrderPreviewResponse,
+      Error,
+      { item: AdminOrderLineItem; bucket: FulfillmentBucket },
+      unknown
+    >,
+    'mutationKey' | 'mutationFn'
+  >,
+) => {
+  const sdk = useMedusaSdk();
+  const queryClient = useQueryClient();
+  const getOrSetDraftOrderId = useGetOrSetDraftOrderId();
+
+  return useMutation({
+    mutationKey: ['draft-order', 'items', 'bucket'],
+    mutationFn: async ({ item, bucket }) => {
+      const draftOrderId = await getOrSetDraftOrderId();
+      // Fetch current metadata so we merge rather than clobber the bucket map.
+      const current = await sdk.admin.draftOrder.retrieve(draftOrderId, { fields: '+metadata' });
+      const existingMetadata = current.draft_order.metadata ?? {};
+      const existingMap = (existingMetadata[FULFILLMENT_BUCKETS_KEY] as Record<string, unknown> | undefined) ?? {};
+
+      await sdk.admin.draftOrder.beginEdit(draftOrderId);
+      try {
+        await sdk.admin.draftOrder.update(draftOrderId, {
+          metadata: {
+            ...existingMetadata,
+            [FULFILLMENT_BUCKETS_KEY]: { ...existingMap, [item.id]: bucket },
+          },
+        });
+        return await sdk.admin.draftOrder.confirmEdit(draftOrderId);
+      } catch (error) {
+        await sdk.admin.draftOrder.cancelEdit(draftOrderId);
+        throw error;
+      }
+    },
+    ...options,
+    onSettled: async (...args) => {
+      if (queryClient.isMutating({ mutationKey: ['draft-order'], exact: false }) === 1) {
+        await queryClient.invalidateQueries({ queryKey: ['draft-order'], exact: false });
+      }
+      return options?.onSettled?.(...args);
+    },
+    onError(error, variables, context) {
+      showErrorToast(error);
+      return options?.onError?.(error, variables, context);
+    },
+  });
+};
 
 export const useUpdateDraftOrderNote = (
   options?: Omit<

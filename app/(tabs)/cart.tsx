@@ -5,8 +5,9 @@ import {
   useCancelDraftOrder,
   useCurrentDraftOrder,
   useDraftOrderPromotions,
+  useDuplicateLineItem,
   useRemovePromotion,
-  useSwapLineItemVariant,
+  useSetLineItemBucket,
   useUpdateDraftOrderCustomer,
   useUpdateDraftOrderItem,
   useUpdateDraftOrderNote,
@@ -15,6 +16,7 @@ import { Form } from '@/components/form/Form';
 import { FormButton } from '@/components/form/FormButton';
 import { TextField } from '@/components/form/TextField';
 import { ChevronDown } from '@/components/icons/chevron-down';
+import { Plus } from '@/components/icons/plus';
 import { ShoppingCart } from '@/components/icons/shopping-cart';
 import { Tag } from '@/components/icons/tag';
 import { Trash2 } from '@/components/icons/trash-2';
@@ -25,13 +27,22 @@ import { PriceEditorDialog } from '@/components/PriceEditorDialog';
 import { CartSkeleton } from '@/components/skeletons/CartSkeleton';
 import { SwipeableListItem } from '@/components/SwipeableListItem';
 import { Button } from '@/components/ui/Button';
-import { Checkbox } from '@/components/ui/Checkbox';
 import { Dialog } from '@/components/ui/Dialog';
+import { FulfillmentBucketSelect } from '@/components/ui/FulfillmentBucketSelect';
 import { Layout } from '@/components/ui/Layout';
 import { Prompt } from '@/components/ui/Prompt';
 import { QuantityPicker } from '@/components/ui/QuantityPicker';
 import { Text } from '@/components/ui/Text';
 import { clx } from '@/utils/clx';
+import {
+  BUCKET_META,
+  bucketsFromOrder,
+  FULFILLMENT_BUCKETS,
+  FulfillmentBucket,
+  getBucket,
+  itemEligibleBuckets,
+} from '@/utils/fulfillment';
+import { commissionCheckoutState } from '@/utils/commissions';
 import { stableCacheKey } from '@/utils/images';
 import { useSettings } from '@/contexts/settings';
 import { AdminDraftOrder, AdminOrderLineItem, AdminPromotion } from '@medusajs/types';
@@ -57,6 +68,7 @@ const addPromotionFormSchema = z.object({
 
 type LineItemType =
   | { id: string; __type__: 'footer' }
+  | { id: string; __type__: 'bucket_header'; bucket: FulfillmentBucket }
   | (AdminOrderLineItem & { __type__: 'draft_order_item' })
   | TPromotionItem;
 
@@ -65,8 +77,6 @@ const ItemCell = React.forwardRef<Animated.View>((props, ref) => {
 });
 ItemCell.displayName = 'ItemCell';
 
-type VariantWithShipping = { id: string; requires_shipping?: boolean | null };
-
 const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: AdminOrderLineItem) => void }> = ({
   item,
   onRemove,
@@ -74,23 +84,17 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
   const settings = useSettings();
   const draftOrder = useCurrentDraftOrder();
   const updateDraftOrderItem = useUpdateDraftOrderItem();
-  const swapLineItemVariant = useSwapLineItemVariant();
+  const setLineItemBucket = useSetLineItemBucket();
+  const duplicateLineItem = useDuplicateLineItem();
   const thumbnail = item.thumbnail || item.product?.thumbnail || item.product?.images?.[0]?.url;
   const [isPriceEditorVisible, setIsPriceEditorVisible] = React.useState(false);
 
   const currencyCode = draftOrder.data?.draft_order.region?.currency_code || settings.data?.region?.currency_code;
   const hasCustomPrice = item.compare_at_unit_price != null && item.compare_at_unit_price !== item.unit_price;
 
-  // The product's other variants — used to find a shipping/non-shipping twin to swap to.
-  const productVariants = (item.product?.variants ?? []) as VariantWithShipping[];
-  const shippingTwin = productVariants.find(
-    (v) => v.id !== item.variant_id && Boolean(v.requires_shipping) !== item.requires_shipping,
-  );
-  const canToggleShipping = !!shippingTwin && !swapLineItemVariant.isPending;
-
-  console.log(
-    `Item: ${item.id}, Quantity: ${item.quantity}, Price: ${item.unit_price}, Compare At Price: ${item.compare_at_unit_price}`,
-  );
+  const buckets = bucketsFromOrder(draftOrder.data?.draft_order.metadata);
+  const eligible = itemEligibleBuckets(item);
+  const bucket = getBucket(item, eligible, buckets);
 
   const handlePriceUpdate = (newPrice: number) => {
     // Determine the original price to preserve:
@@ -128,7 +132,7 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
           </View>
         }
       >
-        <View className="flex-row gap-4 bg-white py-6">
+        <View className={clx('flex-row gap-4 border-l-4 bg-white py-6 pl-3', BUCKET_META[bucket].barClass)}>
           <View className="h-[5.25rem] w-[5.25rem] overflow-hidden rounded-xl bg-gray-200">
             {thumbnail && (
               <Image
@@ -167,21 +171,22 @@ const DraftOrderItem: React.FC<{ item: AdminOrderLineItem; onRemove?: (item: Adm
               }
               className="self-start"
             />
-            <Checkbox
-              label="Requires shipping"
-              checked={item.requires_shipping}
-              disabled={!canToggleShipping}
-              onCheckedChange={() => {
-                if (!shippingTwin) return;
-                swapLineItemVariant.mutate({
-                  itemId: item.id,
-                  newVariantId: shippingTwin.id,
-                  quantity: item.quantity,
-                  unit_price: item.unit_price,
-                  compare_at_unit_price: item.compare_at_unit_price,
-                });
-              }}
-            />
+            <View className="flex-row items-center gap-3">
+              <FulfillmentBucketSelect
+                value={bucket}
+                eligible={eligible}
+                disabled={setLineItemBucket.isPending}
+                onChange={(next) => setLineItemBucket.mutate({ item, bucket: next })}
+              />
+              <Pressable
+                disabled={duplicateLineItem.isPending}
+                onPress={() => duplicateLineItem.mutate(item)}
+                className={clx('flex-row items-center gap-1 py-1.5', { 'opacity-50': duplicateLineItem.isPending })}
+              >
+                <Plus size={14} className="text-active-500" />
+                <Text className="text-sm text-active-500">Duplicate</Text>
+              </Pressable>
+            </View>
           </View>
           <TouchableOpacity onPress={() => setIsPriceEditorVisible(true)} className="ml-auto">
             <View className="items-end gap-1">
@@ -597,23 +602,46 @@ export default function CartScreen() {
   const itemsListRef = React.useRef<FlashListRef<LineItemType>>(null);
 
   const [isDialogVisible, setIsDialogVisible] = React.useState(false);
+  const [isCustomerWarningVisible, setIsCustomerWarningVisible] = React.useState(false);
 
-  // Derive shipping requirement from items themselves — any item with requires_shipping
-  // means the order needs a real customer (for the shipping address).
-  const orderRequiresShipping = React.useMemo(
-    () => draftOrder.data?.draft_order.items.some((item) => item.requires_shipping) ?? false,
-    [draftOrder.data],
-  );
+  // Pickup and ship items need a real customer (to contact for pickup / shipping).
+  // Surfaced while building the cart so the operator isn't blocked at payment.
+  const orderNeedsCustomer = React.useMemo(() => {
+    const buckets = bucketsFromOrder(draftOrder.data?.draft_order.metadata);
+    return (
+      draftOrder.data?.draft_order.items.some((item) => {
+        const bucket = getBucket(item, itemEligibleBuckets(item), buckets);
+        return bucket === 'pickup' || bucket === 'ship';
+      }) ?? false
+    );
+  }, [draftOrder.data]);
+
+  // A commission needs more than "some customer": it needs one the BUYER can
+  // sign into, because the notes thread on the order is their only channel to
+  // the artist for the whole multi-week build. The backend enforces this when
+  // the draft order is converted — but on the till that conversion happens
+  // AFTER the card is charged, so a refusal there is a refund in front of a
+  // customer. Asking the same question here, while the cart is still being
+  // built, is what stops anyone ever reaching it.
+  const commissionState = React.useMemo(() => commissionCheckoutState(draftOrder.data?.draft_order), [draftOrder.data]);
 
   // Determine customer state for highlighting
   const isPosDefaultCustomer =
     !draftOrder.data?.draft_order.customer ||
     draftOrder.data?.draft_order.customer.email === DRAFT_ORDER_DEFAULT_CUSTOMER_EMAIL;
 
-  const customerHighlight = orderRequiresShipping ? (isPosDefaultCustomer ? 'required' : 'valid') : 'none';
+  const customerHighlight =
+    commissionState.blocked || (orderNeedsCustomer && isPosDefaultCustomer)
+      ? 'required'
+      : orderNeedsCustomer || commissionState.hasCommission
+        ? 'valid'
+        : 'none';
 
-  // Check if user can proceed to checkout
-  const canCheckout = !orderRequiresShipping || !isPosDefaultCustomer;
+  // Check if user can proceed to checkout.
+  // ⚠ Ordinary sales are untouched: `commissionState.blocked` is false for any
+  // order with no commission line, so stickers and prints keep the fast
+  // shared-guest path exactly as before.
+  const canCheckout = (!orderNeedsCustomer || !isPosDefaultCustomer) && !commissionState.blocked;
 
   const onItemRemove = React.useCallback(
     (item: AdminOrderLineItem) => {
@@ -661,7 +689,13 @@ export default function CartScreen() {
 
   const renderItem = React.useCallback<ListRenderItem<LineItemType>>(
     ({ item }) =>
-      item.__type__ === 'draft_order_item' ? (
+      item.__type__ === 'bucket_header' ? (
+        <View className={clx('flex-row items-center border-l-4 pb-1 pl-3 pt-2', BUCKET_META[item.bucket].barClass)}>
+          <Text className={clx('text-sm font-semibold uppercase', BUCKET_META[item.bucket].labelClass)}>
+            {BUCKET_META[item.bucket].label}
+          </Text>
+        </View>
+      ) : item.__type__ === 'draft_order_item' ? (
         <DraftOrderItem item={item} onRemove={onItemRemove} />
       ) : item.__type__ === 'promotion' ? (
         <PromotionItem
@@ -755,11 +789,21 @@ export default function CartScreen() {
     );
   }
 
+  const itemBuckets = bucketsFromOrder(draftOrder.data.draft_order.metadata);
+  const groupedItems: LineItemType[] = [];
+  for (const bucket of FULFILLMENT_BUCKETS) {
+    const itemsInBucket = draftOrder.data.draft_order.items.filter(
+      (item) => getBucket(item, itemEligibleBuckets(item), itemBuckets) === bucket,
+    );
+    if (itemsInBucket.length === 0) continue;
+    groupedItems.push({ id: `bucket:${bucket}`, __type__: 'bucket_header', bucket });
+    for (const item of itemsInBucket) {
+      groupedItems.push({ ...item, __type__: 'draft_order_item' as const });
+    }
+  }
+
   const items = [
-    ...draftOrder.data.draft_order.items.map((item) => ({
-      ...item,
-      __type__: 'draft_order_item' as const,
-    })),
+    ...groupedItems,
     ...(addedPromotions.data?.promotions ?? []).map(
       (promotion) =>
         ({
@@ -821,12 +865,6 @@ export default function CartScreen() {
             )}
           </View>
 
-          {orderRequiresShipping && isPosDefaultCustomer && (
-            <InfoBanner colorScheme="warning" className="mb-6">
-              Please select a customer before proceeding. Orders with shipping items must have customer information.
-            </InfoBanner>
-          )}
-
           <OrderNoteInput
             initialValue={
               typeof draftOrder.data.draft_order.metadata?.note === 'string'
@@ -849,13 +887,14 @@ export default function CartScreen() {
             <Button
               className="flex-1"
               disabled={
-                draftOrder.data.draft_order.items.length === 0 ||
-                draftOrder.isFetching ||
-                isUpdatingDraftOrder > 0 ||
-                !canCheckout
+                draftOrder.data.draft_order.items.length === 0 || draftOrder.isFetching || isUpdatingDraftOrder > 0
               }
               onPress={() => {
                 if (!draftOrder.data?.draft_order.id) {
+                  return;
+                }
+                if (!canCheckout) {
+                  setIsCustomerWarningVisible(true);
                   return;
                 }
                 router.push({
@@ -886,6 +925,44 @@ export default function CartScreen() {
         showCloseButton={false}
         dismissOnOverlayPress={false}
       />
+
+      <Dialog
+        visible={isCustomerWarningVisible}
+        onClose={() => setIsCustomerWarningVisible(false)}
+        title={commissionState.blocked ? 'Customer account required' : 'Customer required'}
+        dismissOnOverlayPress
+      >
+        <View className="gap-4">
+          {commissionState.blocked ? (
+            <>
+              <Text className="text-gray-400">
+                {commissionState.titles.join(', ')} is made to order and worked on with the customer — reference photos,
+                progress updates and approvals all live on their order, and that conversation is only reachable from an
+                account they can sign into.
+              </Text>
+              <Text className="text-gray-400">
+                Add the customer with their own email address and tick “Set up an account”. They will get a link to
+                choose a password.
+              </Text>
+              <Button
+                onPress={() => {
+                  setIsCustomerWarningVisible(false);
+                  router.push('/customer-lookup');
+                }}
+              >
+                Add Customer
+              </Button>
+            </>
+          ) : (
+            <>
+              <Text className="text-gray-400">
+                Pickup and shipped items need a customer to contact. Add a customer, then check out.
+              </Text>
+              <Button onPress={() => setIsCustomerWarningVisible(false)}>OK</Button>
+            </>
+          )}
+        </View>
+      </Dialog>
     </>
   );
 }

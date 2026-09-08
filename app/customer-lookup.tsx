@@ -1,7 +1,8 @@
-import { useCreateCustomer, useCustomers } from '@/api/hooks/customers';
-import { useUpdateDraftOrderCustomer } from '@/api/hooks/draft-orders';
+import { useCreateCustomer, useCustomers, useProvisionCustomerAccount } from '@/api/hooks/customers';
+import { useCurrentDraftOrder, useUpdateDraftOrderCustomer } from '@/api/hooks/draft-orders';
 import { Form } from '@/components/form/Form';
 import { FormButton } from '@/components/form/FormButton';
+import { SwitchField } from '@/components/form/SwitchField';
 import { TextField } from '@/components/form/TextField';
 import { CircleAlert } from '@/components/icons/circle-alert';
 import { InfoBanner } from '@/components/InfoBanner';
@@ -10,6 +11,7 @@ import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Text } from '@/components/ui/Text';
 import { clx } from '@/utils/clx';
+import { isPlaceholderEmail, orderHasCommission } from '@/utils/commissions';
 import { formatPhoneNumber } from '@/utils/phone';
 import { AdminCustomer, AdminCustomerFilters } from '@medusajs/types';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -18,6 +20,16 @@ import { useFormContext } from 'react-hook-form';
 import { FlatList, TouchableOpacity, View } from 'react-native';
 import { z } from 'zod/v4';
 
+/**
+ * A stand-in address so a walk-in can be recorded without one.
+ *
+ * ⚠ It is on the STORE's domain, so mail sent to it reaches the store and never
+ * the customer. That is fine for a sticker sale — nothing is ever sent — and
+ * unusable for anything that has to reach the buyer later. A commission cannot
+ * be sold against one: the backend refuses it, and the account switch below is
+ * forced on (and a real address required) whenever the order holds a
+ * commission line. See `utils/commissions.ts`.
+ */
 const generateDefaultEmail = (phone: string) => {
   const digits = phone.replace(/\D/g, '');
   return digits ? `pos-customer+${digits}@taylormade.cc` : '';
@@ -28,6 +40,32 @@ const customerFormSchema = z.object({
   first_name: z.string().optional(),
   last_name: z.string().optional(),
   phone: z.string().optional(),
+  // Whether to give this customer a sign-in-able account and email them a link
+  // to set a password. Optional for ordinary sales, FORCED ON for commissions —
+  // see `commissionFormSchema`.
+  create_account: z.boolean().optional(),
+});
+
+/**
+ * The stricter schema used while the order contains a commission.
+ *
+ * A commission buyer must be reachable: their only channel to the artist over a
+ * multi-week build is the notes thread on their order, and that thread needs an
+ * account they can sign into. So the email stops being optional and the
+ * store-domain placeholder (`pos-customer+<digits>@…`) stops being acceptable —
+ * a set-password link sent there reaches the store, not the buyer.
+ *
+ * Validating it here rather than only on the server is what keeps the refusal
+ * off the payment path: on the till the card is charged BEFORE the draft order
+ * is converted, so a server-side refusal at conversion is a refund in front of
+ * a customer.
+ */
+const commissionCustomerFormSchema = customerFormSchema.extend({
+  email: z
+    .email('A commission needs the customer\u2019s own email address')
+    .refine((value) => !isPlaceholderEmail(value), {
+      message: 'Use the customer\u2019s own address \u2014 they need to receive the link to set a password',
+    }),
 });
 
 // Small debounce so live match lookups don't fire on every keystroke.
@@ -196,10 +234,20 @@ const AddOrCreateCustomerButton: React.FC<{
 }> = ({ query, onResolved }) => {
   const [isOpen, setIsOpen] = React.useState(false);
   const createCustomer = useCreateCustomer();
+  const provisionAccount = useProvisionCustomerAccount();
+  const draftOrder = useCurrentDraftOrder();
+
+  // A commission in the cart changes what "add a customer" has to produce: not
+  // a record of who someone is, but an account they can sign into. The switch
+  // below is forced on and the email becomes required.
+  const requiresAccount = orderHasCommission(draftOrder.data?.draft_order);
 
   const trimmedQuery = query.trim();
   // Pre-fill the form from whatever the operator already typed in the search box.
-  const defaultValues = React.useMemo(() => ({ ...parseQueryToFields(query), email: '' }), [query]);
+  const defaultValues = React.useMemo(
+    () => ({ ...parseQueryToFields(query), email: '', create_account: requiresAccount }),
+    [query, requiresAccount],
+  );
 
   return (
     <>
@@ -221,19 +269,64 @@ const AddOrCreateCustomerButton: React.FC<{
       >
         {isOpen && (
           <Form
-            schema={customerFormSchema}
+            schema={requiresAccount ? commissionCustomerFormSchema : customerFormSchema}
             defaultValues={defaultValues}
             onSubmit={(data, form) => {
               const email = data.email || generateDefaultEmail(data.phone || '');
               if (!email) return;
+
+              const finish = (customer: AdminCustomer) => {
+                onResolved(customer);
+                setIsOpen(false);
+                form.reset();
+              };
+
+              // ── The account path ──────────────────────────────────────────
+              //
+              // ONE backend call does all of it: creates (or upgrades) the
+              // customer, provisions the auth identity, and sends the
+              // set-password email. Deliberately not three calls from here —
+              // at a show, a sequence that fails partway leaves a commission
+              // attached to a customer who cannot sign in, which is the bug
+              // this exists to fix, and the operator sees nothing wrong.
+              //
+              // It is also idempotent, so a retry after a flaky tap is safe.
+              if (data.create_account || requiresAccount) {
+                provisionAccount.mutate(
+                  {
+                    email,
+                    first_name: data.first_name,
+                    last_name: data.last_name,
+                    phone: data.phone,
+                    provisioned_via: 'pos',
+                  },
+                  {
+                    onSuccess: (res) => {
+                      // The provisioning endpoint answers with ids, not a full
+                      // customer, so shape one for the caller. `has_account` is
+                      // true by construction — the call does not return success
+                      // without it.
+                      finish({
+                        id: res.customer_id,
+                        email: res.email,
+                        first_name: data.first_name ?? null,
+                        last_name: data.last_name ?? null,
+                        phone: data.phone ?? null,
+                        has_account: true,
+                      } as AdminCustomer);
+                    },
+                  },
+                );
+                return;
+              }
+
+              // ── The ordinary path, unchanged ──────────────────────────────
+              // Stickers, prints and originals keep the fast flow: a customer
+              // record, no account, no email, no extra taps.
               createCustomer.mutate(
                 { first_name: data.first_name, last_name: data.last_name, phone: data.phone, email },
                 {
-                  onSuccess: (res) => {
-                    onResolved(res.customer);
-                    setIsOpen(false);
-                    form.reset();
-                  },
+                  onSuccess: (res) => finish(res.customer),
                 },
               );
             }}
@@ -251,13 +344,23 @@ const AddOrCreateCustomerButton: React.FC<{
               formatValue={formatPhoneNumber}
             />
             <EmailFieldWithPhonePlaceholder />
+            <SwitchField
+              name="create_account"
+              label="Set up an account"
+              description={
+                requiresAccount
+                  ? 'Required for a commission — the customer gets a link to set a password, and their order thread with the artist lives behind it.'
+                  : 'Emails the customer a link to set a password so they can see their order online.'
+              }
+              disabled={requiresAccount}
+            />
             <DuplicateMatches
               onSelectExisting={(customer) => {
                 onResolved(customer);
                 setIsOpen(false);
               }}
             />
-            <FormButton>Create Customer</FormButton>
+            <FormButton>{requiresAccount ? 'Create Customer & Account' : 'Create Customer'}</FormButton>
           </Form>
         )}
       </Dialog>
